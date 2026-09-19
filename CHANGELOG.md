@@ -1,0 +1,61 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.1.0] - 2026-09-19
+
+### Added
+
+- **PV delivery check** (`sensor.ems_pv_delivery`): compares the commanded output
+  (percentage x reachable capacity) with what is actually produced, so an inverter that is
+  still "available" but delivers nothing gets noticed. The watchdog raises a
+  *PV under-delivering* notification when the ratio stays below 70 % and more than 800 W
+  short for three consecutive runs (~6 minutes), so a passing cloud does not raise it.
+  The counter resets when the output recovers, i.e. the notification is raised once per
+  episode.
+- **Persistent counter** helper `input_number.ems_delivery_short` for the above.
+- Documentation set: `docs/INSTALL.md`, `docs/CONFIGURATION.md`,
+  `docs/TROUBLESHOOTING.md`.
+- CI: `tests/validate_package.py` plus a GitHub Actions workflow that parses the YAML and
+  every Jinja template, and renders the documented behaviour scenarios.
+
+### Changed
+
+- Watchdog now performs three independent checks: stale loop, capacity shortfall and
+  sustained under-delivery.
+
+## [1.0.0] - 2026-09-19
+
+First release: replacement for a 20 s polling automation that could force a grid export.
+
+### Added
+
+- Control loop with the target `solar + grid + (charge_limit - battery_power) + bias`,
+  equivalent to `load + charge_limit + bias`, i.e. the battery gets every watt the house
+  load leaves over.
+- **No charge push while exporting** (`grid < -30 W`): fixes the runaway export of the
+  original script when the battery could not absorb the extra PV.
+- **Signed battery power**: discharging increases the target instead of breaking it.
+- **Relative (percentage) inverter limits** for a mixed 1500 W / 2x 1600 W fleet, with the
+  capacity summed from the reachable inverters only.
+- **Redistribution**: an inverter whose limit entity is `unavailable` is excluded from the
+  capacity, so its share goes to the remaining inverters (verified: 2 of 3 active at 0 W
+  grid -> 100 %).
+- Two grid meters with arbitration: Shelly primary, Victron smart meter as live backup, and
+  the more conservative (smaller) value when they disagree by more than *EMS meter
+  tolerance*.
+- Fail-safe ladder `FULL` / `NO_BATTERY` / `GRID_BLIND` / `OFF` with staleness, plausibility
+  and cross-source checks.
+- Watchdog on an `input_datetime` heartbeat (300 s) that re-asserts a fail-safe limit and
+  notifies; plus a *PV capacity short* notification.
+- **Victron ramp handling**: `EMS settle time` after every write, `EMS max step` for
+  increases (decreases immediate), 5 s trigger debounce, 15 s heartbeat, and a real export
+  (> 500 W) bypassing the settle time.
+- 180 s re-assert of the non-persistent limit (guards against the Hoymiles 2.0.4 behaviour).
+- Continuous SoC charge taper (90 % -> 99 %) instead of a 1000 W cliff.
+- Parallel, error tolerant writes (`continue_on_error`) instead of sequential writes with
+  delays, so no half-written state can remain.
+- Roughly 99 % fewer limit writes than the original 20 s polling loop.
