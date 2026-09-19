@@ -1,5 +1,8 @@
 # OpenDTU Zero-Export EMS for Home Assistant
 
+[![Validate package](https://github.com/acdcnow/opendtu-ems/actions/workflows/validate.yml/badge.svg)](https://github.com/acdcnow/opendtu-ems/actions/workflows/validate.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A single-file Home Assistant package that runs a **battery-first, zero-export** energy
 management loop for Hoymiles micro-inverters controlled through
 [OpenDTU](https://github.com/tbnobody/OpenDTU) (or OpenDTU-OnBattery).
