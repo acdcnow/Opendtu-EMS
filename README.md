@@ -26,6 +26,7 @@ dies.
 - [Entities it creates](#entities-it-creates)
 - [Requirements](#requirements)
 - [Quick install](#quick-install)
+- [Day-to-day use](#day-to-day-use)
 - [Why the relative limits](#why-the-relative-limits)
 - [Hardware backstop](#hardware-backstop)
 - [Alternatives](#alternatives)
@@ -42,6 +43,7 @@ dies.
 | Nothing more can be charged | PV is cut back until the export stops (the loop **never raises PV while the grid exports**) |
 | Battery full / charge taper | PV covers the house load only, grid stays at +20 W |
 | One inverter offline | Its capacity share is redistributed to the remaining inverters (up to 100 % each) |
+| OpenDTU powered off / unplugged | `DTU_BLIND`: no writes, a notification says why, the loop resumes by itself |
 | Battery data lost | Pure zero export: `PV = house load + 20 W` (no charge push that could cause an export) |
 | Grid meter lost | The second (backup) meter takes over seamlessly; only if **both** are gone the inverters are set to a fail-safe limit |
 | Loop stopped / HA restarted | A watchdog re-asserts a safe limit and raises a notification |
@@ -86,14 +88,16 @@ are immediate).
 | Mode | When | Action |
 |---|---|---|
 | `FULL` | all sensors plausible and fresh | `load + charge_limit + bias` |
+| `DTU_BLIND` | no inverter limit entity is readable (OpenDTU off, MQTT down, ids changed) | nothing is written, `no inverter reachable` notification |
 | `NO_BATTERY` | SoC / battery power missing, stale, implausible or contradictory, or the test switch is on | `load + bias` — zero export only |
-| `GRID_BLIND` | both grid meters dead or frozen for 5 min | fail-safe limit (default 0 %) — export impossible |
+| `GRID_BLIND` | no usable grid reading, or no solar reading to compute the house load | fail-safe limit (default 0 %) — export impossible |
 | `OFF` | kill switch off | no writes |
 
 Additionally:
 
 * **watchdog** — no limit written for 300 s → notification + fail-safe write (the write also
   refreshes the heartbeat, so the alarm is not repeated)
+* **no inverter reachable** — OpenDTU off / MQTT down → nothing is written and the watchdog says so
 * **PV capacity short** — fewer than 3 inverters reachable, they already run at 100 % and the
   grid still imports
 * **PV under-delivering** — commanded output stays below 70 % and more than 800 W short for
@@ -143,6 +147,31 @@ Plus 12 helpers (`input_boolean`, `input_number`, `input_datetime`) — see
 5. Set a **low persistent limit** on every inverter in the OpenDTU web UI (hardware backstop).
 
 Full walkthrough with verification and fail-safe tests: [docs/INSTALL.md](docs/INSTALL.md).
+
+## Day-to-day use
+
+After the installation there is nothing to do — the loop runs by itself. The entities worth
+knowing:
+
+| I want to… | Use |
+|---|---|
+| pause everything immediately | `input_boolean.ems_enabled` → off (no writes at all) |
+| test the "battery data lost" path | `input_boolean.ems_simulate_battery_loss` → on |
+| write a fixed limit by hand | `input_number.ems_manual_pct` → 0…100 (`-1` = automatic) |
+| see what the loop is doing | `sensor.ems_mode`, `sensor.ems_limit_target`, `sensor.ems_pv_delivery` |
+| see which meter is used | attribute `source` of `sensor.ems_grid_power` |
+| see how many inverters answer | attribute `active` of `sensor.ems_inverter_capacity` |
+| see when it last wrote | `input_datetime.ems_last_apply` |
+| get a diagnostic line per run | `input_boolean.ems_verbose` plus the `logger` entry from [docs/INSTALL.md](docs/INSTALL.md#6-verify-the-first-runs) |
+| check why it did nothing | Settings → Automations → *OpenDTU EMS - control loop* → ⋮ → Traces |
+
+Healthy readings while the sun is up: mode `FULL`, `source` = `shelly`, `active` = 3,
+`EMS PV delivery` near 100 %, `sensor.ems_grid_power` a few watts **positive**, and
+`input_datetime.ems_last_apply` never older than 3 minutes.
+
+When something is off the system reports it itself: `binary_sensor.ems_degraded` turns on and
+one of the notifications appears (`no inverter reachable`, `PV capacity short`,
+`PV under-delivering`, `fail-safe active`).
 
 ## Why the relative limits
 

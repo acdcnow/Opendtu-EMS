@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-09-20
+
+### Added
+
+- **`DTU_BLIND` mode**: when no `number.*_limit_nonpersistent_relative` entity is readable
+  (OpenDTU powered off, MQTT broker down, entity ids changed) the control loop stops writing
+  instead of producing error logs, and the watchdog raises a persistent notification
+  *OpenDTU EMS - no inverter reachable*. Everything resumes automatically once an inverter is
+  reachable again. The mode is checked before the measurement checks, so a switched-off DTU is
+  diagnosed as `DTU_BLIND` and not as a missing grid meter.
+- README section *Day-to-day use* (what to watch, what to touch, when the system reports itself).
+- TROUBLESHOOTING section *The EMS entities do not appear at all* (package/include checklist)
+  and *Mode is DTU_BLIND*.
+
+### Changed
+
+- `GRID_BLIND` is now also entered when the solar sensor is unreadable while inverters are
+  reachable (the house load cannot be computed then) — previously that was reported as a
+  battery problem.
+- `sensor.ems_pv_delivery` reports 0 % instead of a healthy 100 % when no inverter is
+  reachable, and the *PV capacity short* notification no longer fires for that case (it is
+  covered by the new DTU notification).
+- The stale-loop alarm of the watchdog is suppressed while the mode is `DTU_BLIND`, because
+  not writing is the correct behaviour then.
+
 ## [1.1.0] - 2026-09-19
 
 ### Added

@@ -4,8 +4,10 @@ Work through the symptom table first, then the detail sections.
 
 | Symptom | Look at | Likely cause |
 |---|---|---|
+| **No `ems_*` entities at all** | `configuration.yaml`, Logs | the package was not loaded — see [below](#the-ems-entities-do-not-appear-at-all) |
 | `sensor.ems_mode` is `OFF` | `input_boolean.ems_enabled` | master switch off |
-| `sensor.ems_mode` is `GRID_BLIND` | `sensor.ems_grid_power` → `source` | both meters dead, renamed or stale |
+| `sensor.ems_mode` is `DTU_BLIND` | `sensor.ems_inverter_capacity` = 0 | OpenDTU off, MQTT down, ids changed |
+| `sensor.ems_mode` is `GRID_BLIND` | `sensor.ems_grid_power` → `source`, `sensor.solarleistung_gesamt` | both meters dead, renamed or stale — or the solar sensor is gone |
 | `sensor.ems_mode` is `NO_BATTERY` | `sensor.serialbattery_seplos_*` | SoC/power sensor unavailable, stale or out of range |
 | Limit stays at `0 %` | mode, `input_number.ems_failsafe_pct` | `GRID_BLIND` fail-safe, or `ems_manual_pct = 0` |
 | Limit never changes | trace of the loop, `input_datetime.ems_last_apply` | condition blocked (settle/hysteresis) or the loop errors |
@@ -15,6 +17,49 @@ Work through the symptom table first, then the detail sections.
 | *PV capacity short* notification | OpenDTU inverter page | an inverter is offline / its limit entity disappeared |
 | *PV under-delivering* notification | `sensor.ems_pv_delivery` attributes | inverter not delivering **or** heavy clouds/shading |
 | *fail-safe active* notification | `automation.opendtu_ems_loop` | the loop stopped writing (disabled, error, restart) |
+
+---
+
+## The EMS entities do not appear at all
+
+A missing `sensor.ems_*`, missing helpers or missing automations have nothing to do with
+OpenDTU — the package is not loaded. Check, in this order:
+
+1. **File location** — the file must be exactly `<config>/packages/opendtu_ems.yaml`.
+   `<config>` is the directory that contains `configuration.yaml` (via Samba: `\\<host>\config\`).
+2. **The include** — `configuration.yaml` must contain
+
+   ```yaml
+   homeassistant:
+     packages: !include_dir_named packages
+   ```
+
+   The folder name must match: `!include_dir_named packages` reads `packages/`.
+3. **Do not add a second `homeassistant:` block.** If one already exists (very common),
+   *merge* the `packages:` key into it — duplicate top-level keys make Home Assistant
+   reject the configuration.
+4. **Restart, do not reload.** Helpers and template entities are only created at startup.
+5. **Check the configuration before restarting**: Settings → Developer tools → *Check
+   configuration*. After the restart look at Settings → Logs for `Invalid config` and for
+   `Package packages/... setup failed` — a single YAML or Jinja error rejects the whole file.
+6. **Verify what should exist**: Search `ems_` in Developer tools → States (6 entities),
+   Settings → Automations (2), Settings → Helpers (12, search "EMS").
+
+As a quick sanity check of the file itself, you can run the repository test suite locally:
+
+```bash
+pip install pyyaml jinja2
+python tests/validate_package.py packages/opendtu_ems.yaml
+```
+
+## Mode is DTU_BLIND
+
+No `number.*_limit_nonpersistent_relative` entity has a value, so the loop cannot control
+anything and stops writing. Typical causes: the ESP32 running OpenDTU is unplugged or
+rebooting, the MQTT broker is down, the DTU has no Wi-Fi, or the entity IDs were renamed
+(section 1 of the package). The grid and battery sensors are unaffected, and the loop resumes
+by itself as soon as one inverter entity is readable again. A persistent notification
+*OpenDTU EMS - no inverter reachable* is raised while it lasts.
 
 ---
 
@@ -83,6 +128,7 @@ update in place instead of piling up. They disappear when you dismiss them.
 | `notification_id` | Meaning |
 |---|---|
 | `opendtu_ems_failsafe` | the loop stopped writing — fail-safe limit applied |
+| `opendtu_ems_dtu` | no inverter is reachable at all (OpenDTU off / MQTT down) |
 | `opendtu_ems_capacity` | fewer than 3 inverters reachable, the rest already at 100 %, grid still imports |
 | `opendtu_ems_delivery` | commanded output stays below 70 % and > 800 W short for ~6 min |
 

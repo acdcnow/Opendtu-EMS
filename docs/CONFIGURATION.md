@@ -8,14 +8,20 @@ Everything the package creates, what it means and how to tune it.
 
 | Mode | Entered when | Target written |
 |---|---|---|
-| `FULL` | SoC and battery power are fresh and plausible, at least one grid meter is alive, solar is readable | `load + charge_limit + bias`, clamped to the reachable capacity |
+| `FULL` | SoC and battery power are fresh and plausible, at least one grid meter is alive, solar is readable, at least one inverter is reachable | `load + charge_limit + bias`, clamped to the reachable capacity |
+| `DTU_BLIND` | **no** inverter limit entity is readable (OpenDTU powered off, MQTT broker down, entity ids changed) | nothing — the loop stops writing and the watchdog raises *no inverter reachable* |
+| `GRID_BLIND` | neither grid meter has a value and a recent update, **or** the solar sensor is not readable while inverters are reachable (the house load cannot be computed) | `input_number.ems_failsafe_pct` (default 0 %) |
 | `NO_BATTERY` | SoC or battery power missing / stale (> 120 s power, > 300 s SoC) / outside 0–100 %, or the test switch is on | `load + bias` (zero export only — the charge term is dropped) |
-| `GRID_BLIND` | neither grid meter has a value and a recent update | `input_number.ems_failsafe_pct` (default 0 %) |
 | `OFF` | `input_boolean.ems_enabled` is off | nothing is written |
 
 Mode is published as `sensor.ems_mode`; `binary_sensor.ems_degraded` is on for everything
 except `FULL`/`OFF` and also when the grid value comes from the backup meter or the two
 meters disagree.
+
+> The EMS entities (helpers, sensors, script, automations) are plain Home Assistant entities.
+> They exist regardless of OpenDTU — a DTU that is switched off only makes the
+> `number.*_limit_nonpersistent_relative` entities unavailable, which turns
+> `sensor.ems_inverter_capacity` into 0 and the mode into `DTU_BLIND`.
 
 ---
 

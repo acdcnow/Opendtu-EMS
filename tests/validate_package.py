@@ -168,6 +168,16 @@ CONTROL_CASES = {
                                "FULL", "shelly", 0, 3100, 2, 100.0, True),
     "2 of 3 active (import 300)": ({**BASE, I3: "unavailable", S: "300", V: "300"},
                                    "FULL", "shelly", 300, 3100, 2, 100.0, True),
+    # OpenDTU off / unreachable
+    "DTU off (no inverter readable)": ({**BASE, I1: "unavailable", I2: "unavailable",
+                                         I3: "unavailable"},
+                                        "DTU_BLIND", "shelly", -234, 0, 0, 0.0, True),
+    "DTU off + solar dead": ({**BASE, I1: "unavailable", I2: "unavailable",
+                               I3: "unavailable",
+                               "sensor.solarleistung_gesamt": "unavailable"},
+                              "DTU_BLIND", "shelly", -234, 0, 0, 0.0, True),
+    "solar dead, inverters ok": ({**BASE, "sensor.solarleistung_gesamt": "unavailable"},
+                                  "GRID_BLIND", "shelly", -234, 4700, 3, 0.0, True),
     # Victron ramp: slew limit and settle time
     "slew: rise is limited": ({**BASE, "input_number.ems_max_step_pct": "10",
                                S: "500", V: "500"},
@@ -260,12 +270,16 @@ def main(argv: list[str]) -> int:
     grid, delivery = sensors["ems_grid_power"], sensors["ems_pv_delivery"]
     loop = automations["opendtu_ems_loop"]
     watch = automations["opendtu_ems_watchdog"]
-    write_cond = loop["conditions"][1]["value_template"]
+    write_cond = next(c["value_template"] for c in loop["conditions"]
+                      if "ems_settle_seconds" in str(c.get("value_template", "")))
+    dtu_cond = next(c["value_template"] for c in loop["conditions"]
+                    if "DTU_BLIND" in str(c.get("value_template", "")))
     ifs = [a["if"][0]["value_template"] for a in watch["actions"]
            if isinstance(a.get("if"), list)]
     capacity_tpl = next(t for t in ifs if "99.5" in t)
     short_tpl = next(t for t in ifs if "ems_pv_delivery" in t)
     notify_tpl = next(t for t in ifs if "== 3" in t)
+    dtu_tpl = next(t for t in ifs if "DTU_BLIND" in t)
     incr_tpl = next(a["then"][0]["data"]["value"] for a in watch["actions"]
                     if isinstance(a.get("if"), list)
                     and "ems_pv_delivery" in str(a["if"][0].get("value_template", "")))
@@ -295,6 +309,8 @@ def main(argv: list[str]) -> int:
                     active=active, current=current, mode=mode, target=target,
                     expected=expected, delivered=delivered,
                     write=render(write_cond, d6),
+                    dtu_skip=render(dtu_cond, d6),
+                    dtu_alert=render(dtu_tpl, d6),
                     degraded=render(bsens["ems_degraded"]["state"], d6),
                     capacity_alert=render(capacity_tpl, d6),
                     delivery_alert=render(short_tpl, d6))
@@ -346,6 +362,35 @@ def main(argv: list[str]) -> int:
         if got != str(expected):
             fails.append((f"notify at {current}", [got]))
         print(f"  notify at {current} -> {got:<6} (expect {expected})")
+
+    print("\n== OpenDTU unreachable handling ==")
+    for mode, expect_alert, expect_writes in (("DTU_BLIND", True, "False"),
+                                              ("FULL", False, "True"),
+                                              ("NO_BATTERY", False, "True")):
+        data = {**BASE, "sensor.ems_mode": mode}
+        alert = render(dtu_tpl, data)
+        writes = render(dtu_cond, data)
+        why = []
+        if alert != str(expect_alert):
+            why.append(f"alert={alert}")
+        if writes != expect_writes:
+            why.append(f"writes={writes}")
+        if why:
+            fails.append((f"dtu handling {mode}", why))
+        print(f"  mode {mode:<11} notify={alert:<6} loop-writes={writes:<6} "
+              f"{'OK' if not why else '!! ' + '; '.join(why)}")
+    # a missing inverter must not be reported as a capacity shortfall
+    for active, expect in ((0, False), (2, True)):
+        data = {**BASE, "sensor.ems_mode": "FULL",
+                "__attr:sensor.ems_inverter_capacity:active": str(active),
+                "__attr:sensor.ems_inverter_capacity:current_pct": "100",
+                "sensor.ems_grid_power": "400",
+                "sensor.solarleistung_gesamt": "3000"}
+        got = render(capacity_tpl, data)
+        if got != str(expect):
+            fails.append((f"capacity alert with {active} active", [got]))
+        print(f"  capacity alert with {active} active -> {got:<6}"
+              f" (expect {expect})")
 
     print("\n== result ==")
     if fails:

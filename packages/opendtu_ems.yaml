@@ -1,6 +1,6 @@
 # =============================================================================
 #  OpenDTU  ·  Battery-first / zero-export EMS      (Home Assistant 2026.9)
-#  version 1.1.0  ·  2026-09-19  ·  see CHANGELOG.md
+#  version 1.2.0  ·  2026-09-20  ·  see CHANGELOG.md
 # -----------------------------------------------------------------------------
 #  Drop-in replacement for the automation
 #  "OpenDTU: Battery-First Aggressive EMS (Math-Based)".
@@ -25,6 +25,9 @@
 #   5) the Victron needs several seconds to change the charge current, so the
 #      loop waits "EMS settle time" after every write and never increases the
 #      limit by more than "EMS max step" at once (decreases are immediate)
+#   6) if NO inverter is reachable (OpenDTU powered off, MQTT down, ids changed)
+#      the loop stops writing and reports DTU_BLIND instead of pretending to
+#      control something
 #
 #  INSTALL
 #   * save as  <config>/packages/opendtu_ems.yaml
@@ -253,7 +256,12 @@ template:
 
       # --- operating mode ---------------------------------------------------
       #   OFF         kill switch off
-      #   GRID_BLIND  BOTH grid meters dead/stale -> cannot control -> fail-safe
+      #   DTU_BLIND   no inverter entity readable at all (OpenDTU off, MQTT
+      #               down, ids changed) -> nothing to control, nothing written
+      #   GRID_BLIND  no usable grid reading or no solar reading inside the
+      #               control interval (both grid meters dead/stale, or the
+      #               OpenDTU power sensor gone) -> cannot compute the house
+      #               load -> fail-safe limit
       #   NO_BATTERY  no usable battery data -> pure zero export (no charge push)
       #   FULL        everything fresh -> load + max charge - bias
       #               (also when only the BACKUP grid meter is available)
@@ -267,11 +275,14 @@ template:
               and is only unavailable when neither of them is usable -#}
           {%- set grid_ok = has_value('sensor.ems_grid_power') -%}
           {%- set solar_ok = has_value('sensor.solarleistung_gesamt') -%}
+          {#- the capacity sensor is 0 when no inverter limit entity is readable -#}
+          {%- set cap = states('sensor.ems_inverter_capacity') | float(0) -%}
           {%- set batt_ok = has_value(soc) and has_value(bp)
                             and (states(soc) | float(-1)) >= 0 and (states(soc) | float(-1)) <= 100
                             and (now() - states[bp].last_updated).total_seconds() < 120
                             and (now() - states[soc].last_updated).total_seconds() < 300 -%}
           {%- if not is_state('input_boolean.ems_enabled', 'on') -%}OFF
+          {%- elif cap == 0 -%}DTU_BLIND
           {%- elif not solar_ok or not grid_ok -%}GRID_BLIND
           {%- elif not batt_ok or is_state('input_boolean.ems_simulate_battery_loss', 'on') -%}NO_BATTERY
           {%- else -%}FULL{%- endif -%}
@@ -327,10 +338,12 @@ template:
                  * states('sensor.ems_inverter_capacity') | float(0)) | round(0) -}}
           actual_w: "{{ states('sensor.solarleistung_gesamt') }}"
         state: >-
+          {%- set cap = states('sensor.ems_inverter_capacity') | float(0) -%}
           {%- set exp = states('sensor.ems_limit_target') | float(0) / 100
                         * states('sensor.ems_inverter_capacity') | float(0) -%}
           {%- set act = states('sensor.solarleistung_gesamt') | float(0) -%}
-          {%- if exp < 300 -%}100
+          {%- if cap == 0 -%}0
+          {%- elif exp < 300 -%}100
           {%- else -%}{{ ((act / exp) * 100) | round(0) }}{%- endif -%}
 
       # --- limit percentage to write (single source of truth) ---------------
@@ -489,6 +502,10 @@ automation:
       - condition: state
         entity_id: input_boolean.ems_enabled
         state: "on"
+      # nothing to control while no inverter entity is readable - writing would
+      # only produce error logs, and the watchdog reports that state separately
+      - condition: template
+        value_template: "{{ states('sensor.ems_mode') != 'DTU_BLIND' }}"
       # hysteresis + Victron settle time: write only if the value really
       # changed, or if the last write is older than 3 minutes (non-persistent
       # limits can expire). A real export bypasses the settle time.
@@ -561,7 +578,8 @@ automation:
           last_ts: "{{ state_attr('input_datetime.ems_last_apply', 'timestamp') | float(0) }}"
           timeout: "{{ 300 }}"
           stale: >-
-            {{- last_ts > 0 and (now().timestamp() - last_ts) > timeout -}}
+            {{- last_ts > 0 and (now().timestamp() - last_ts) > timeout
+                and states('sensor.ems_mode') != 'DTU_BLIND' -}}
       - if:
           - condition: template
             value_template: "{{ stale }}"
@@ -592,7 +610,8 @@ automation:
       - if:
           - condition: template
             value_template: >-
-              {{- (state_attr('sensor.ems_inverter_capacity', 'active') | int(3)) < 3
+              {{- (state_attr('sensor.ems_inverter_capacity', 'active') | int(0)) > 0
+                  and (state_attr('sensor.ems_inverter_capacity', 'active') | int(3)) < 3
                   and (state_attr('sensor.ems_inverter_capacity', 'current_pct') | float(0)) >= 99.5
                   and (states('sensor.ems_grid_power') | float(0)) > 200
                   and (states('sensor.solarleistung_gesamt') | float(0)) > 200 -}}
@@ -609,6 +628,23 @@ automation:
                 PV is producing {{ states('sensor.solarleistung_gesamt') }} W, so the
                 reachable capacity cannot cover load + charging. Check the missing
                 inverter in OpenDTU, or accept the shortfall.
+      # no inverter reachable at all: OpenDTU off, MQTT down or ids changed
+      - if:
+          - condition: template
+            value_template: >-
+              {{- states('sensor.ems_mode') == 'DTU_BLIND'
+                  and is_state('input_boolean.ems_enabled', 'on') -}}
+        then:
+          - action: persistent_notification.create
+            data:
+              title: OpenDTU EMS - no inverter reachable
+              notification_id: opendtu_ems_dtu
+              message: >-
+                None of the inverter limit entities is readable, so the EMS cannot
+                control anything and writes nothing. OpenDTU is probably powered
+                off, the MQTT connection is down, or the entity ids in section 1 of
+                the package changed. Grid and battery sensors are not affected.
+                The loop resumes by itself as soon as an inverter is reachable.
       # under-delivery: the inverters are commanded to more than they deliver,
       # even though the grid still imports. Counted over consecutive runs so
       # that a passing cloud does not raise an alarm.
@@ -761,4 +797,16 @@ automation:
 #          {%- if not lost -%} ... add i.w to the cap ... {%- endif -%}
 #    ATTENTION: only exclude an inverter that produces 0 W while the sun is up -
 #    at night all of them read 0 W and the fail-safe would shut everything down.
+#
+# J) OPENDTU OFF / UNREACHABLE: the number.*_limit_nonpersistent_relative
+#    entities belong to the OpenDTU integration. With the DTU powered off they
+#    become unavailable, sensor.ems_inverter_capacity drops to 0 and the mode
+#    becomes DTU_BLIND: the loop stops writing (no error spam), the watchdog
+#    raises "no inverter reachable", and everything resumes by itself once the
+#    DTU is back. The EMS entities themselves (helpers, sensors, script,
+#    automations) are plain Home Assistant entities and always exist - if they
+#    are missing from Developer tools > States, the package was not loaded:
+#    check `<config>/packages/` , the `packages:` key in configuration.yaml
+#    (merge it into an existing homeassistant: block, do not add a second one!)
+#    and restart Home Assistant (helpers are only created at startup).
 # =============================================================================
