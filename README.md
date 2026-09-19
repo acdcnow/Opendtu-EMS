@@ -1,6 +1,7 @@
 # OpenDTU Zero-Export EMS for Home Assistant
 
 [![Validate package](https://github.com/acdcnow/opendtu-ems/actions/workflows/validate.yml/badge.svg)](https://github.com/acdcnow/opendtu-ems/actions/workflows/validate.yml)
+[![Release](https://img.shields.io/github/v/release/acdcnow/opendtu-ems)](https://github.com/acdcnow/opendtu-ems/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A single-file Home Assistant package that runs a **battery-first, zero-export** energy
