@@ -1,6 +1,6 @@
 # =============================================================================
 #  OpenDTU  ·  Battery-first / zero-export EMS      (Home Assistant 2026.9)
-#  version 1.2.0  ·  2026-09-20  ·  see CHANGELOG.md
+#  version 1.3.0  ·  2026-09-20  ·  see CHANGELOG.md
 # -----------------------------------------------------------------------------
 #  Drop-in replacement for the automation
 #  "OpenDTU: Battery-First Aggressive EMS (Math-Based)".
@@ -28,6 +28,9 @@
 #   6) if NO inverter is reachable (OpenDTU powered off, MQTT down, ids changed)
 #      the loop stops writing and reports DTU_BLIND instead of pretending to
 #      control something
+#   7) STARTING (just booted, waiting "EMS start grace" for the sensors and the
+#      ESS) and NIGHT (sun down, no PV) are normal standby states: nothing is
+#      written, nothing is alarmed, and the loop takes over by itself
 #
 #  INSTALL
 #   * save as  <config>/packages/opendtu_ems.yaml
@@ -198,10 +201,26 @@ input_number:
     step: 1
     mode: box
     icon: mdi:counter
+  # after a Home Assistant start nothing is written for this long, so the
+  # sensors can deliver their first values and the ESS can finish booting.
+  # Raise it if your Victron needs longer than 2 minutes to come up.
+  ems_start_grace:
+    name: EMS start grace
+    min: 0
+    max: 900
+    step: 10
+    mode: box
+    unit_of_measurement: s
+    icon: mdi:timer-play-outline
 
 input_datetime:
   ems_last_apply:
     name: EMS last limit write
+    has_date: true
+    has_time: true
+  # written by automation.opendtu_ems_boot at every Home Assistant start
+  ems_started_at:
+    name: EMS started at
     has_date: true
     has_time: true
 
@@ -256,6 +275,9 @@ template:
 
       # --- operating mode ---------------------------------------------------
       #   OFF         kill switch off
+      #   STARTING    less than "EMS start grace" since Home Assistant started:
+      #               waiting for the first sensor values and for the ESS
+      #   NIGHT       sun down and no PV: standby, nothing to control
       #   DTU_BLIND   no inverter entity readable at all (OpenDTU off, MQTT
       #               down, ids changed) -> nothing to control, nothing written
       #   GRID_BLIND  no usable grid reading or no solar reading inside the
@@ -277,11 +299,21 @@ template:
           {%- set solar_ok = has_value('sensor.solarleistung_gesamt') -%}
           {#- the capacity sensor is 0 when no inverter limit entity is readable -#}
           {%- set cap = states('sensor.ems_inverter_capacity') | float(0) -%}
+          {#- sun down and no PV: the inverters sleep, nothing to do -#}
+          {%- set night = is_state('sun.sun', 'below_horizon')
+                          and (states('sensor.solarleistung_gesamt') | float(0)) < 200 -%}
+          {#- after a Home Assistant start: wait before touching anything -#}
+          {%- set started = state_attr('input_datetime.ems_started_at', 'timestamp') | float(0) -%}
+          {%- set starting = started > 0
+                            and (now().timestamp() - started)
+                                < (states('input_number.ems_start_grace') | float(120)) -%}
           {%- set batt_ok = has_value(soc) and has_value(bp)
                             and (states(soc) | float(-1)) >= 0 and (states(soc) | float(-1)) <= 100
                             and (now() - states[bp].last_updated).total_seconds() < 120
                             and (now() - states[soc].last_updated).total_seconds() < 300 -%}
           {%- if not is_state('input_boolean.ems_enabled', 'on') -%}OFF
+          {%- elif starting -%}STARTING
+          {%- elif night -%}NIGHT
           {%- elif cap == 0 -%}DTU_BLIND
           {%- elif not solar_ok or not grid_ok -%}GRID_BLIND
           {%- elif not batt_ok or is_state('input_boolean.ems_simulate_battery_loss', 'on') -%}NO_BATTERY
@@ -403,13 +435,14 @@ template:
 
   - binary_sensor:
       # on when running degraded: any non-FULL mode, or when the grid reading
-      # comes from the backup meter / the two meters disagree
+      # comes from the backup meter / the two meters disagree.
+      # STARTING, NIGHT and OFF are normal states, not a problem.
       - name: "EMS degraded"
         unique_id: ems_degraded
         device_class: problem
         icon: mdi:alert-outline
         state: >-
-          {{- states('sensor.ems_mode') not in ['FULL', 'OFF']
+          {{- states('sensor.ems_mode') not in ['FULL', 'OFF', 'NIGHT', 'STARTING']
               or state_attr('sensor.ems_grid_power', 'source') != 'shelly' -}}
 
 
@@ -502,10 +535,12 @@ automation:
       - condition: state
         entity_id: input_boolean.ems_enabled
         state: "on"
-      # nothing to control while no inverter entity is readable - writing would
-      # only produce error logs, and the watchdog reports that state separately
+      # nothing to control in standby (STARTING / NIGHT) and while no inverter
+      # entity is readable - writing would only produce error logs, and the
+      # watchdog reports those states separately
       - condition: template
-        value_template: "{{ states('sensor.ems_mode') != 'DTU_BLIND' }}"
+        value_template: >-
+          {{ states('sensor.ems_mode') not in ['STARTING', 'NIGHT', 'DTU_BLIND'] }}
       # hysteresis + Victron settle time: write only if the value really
       # changed, or if the last write is older than 3 minutes (non-persistent
       # limits can expire). A real export bypasses the settle time.
@@ -579,7 +614,7 @@ automation:
           timeout: "{{ 300 }}"
           stale: >-
             {{- last_ts > 0 and (now().timestamp() - last_ts) > timeout
-                and states('sensor.ems_mode') != 'DTU_BLIND' -}}
+                and states('sensor.ems_mode') not in ['STARTING', 'NIGHT', 'DTU_BLIND'] -}}
       - if:
           - condition: template
             value_template: "{{ stale }}"
@@ -690,6 +725,34 @@ automation:
                 persistent limit) - check "reachable"/"producing" for each inverter
                 in OpenDTU - or it is simply heavily clouded. The notification
                 repeats only after the output recovers.
+
+
+# =============================================================================
+# 7) STARTUP MARKER - lets the loop stay in STARTING after a restart
+# =============================================================================
+  - id: opendtu_ems_boot
+    alias: "OpenDTU EMS - startup marker"
+    description: >-
+      Records the Home Assistant start time. sensor.ems_mode stays STARTING for
+      "EMS start grace" seconds afterwards, so that neither half-initialised
+      sensors nor an ESS that is still booting can cause a wrong limit write.
+    mode: single
+    triggers:
+      - trigger: homeassistant
+        event: start
+    actions:
+      - action: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.ems_started_at
+        data:
+          timestamp: "{{ now().timestamp() }}"
+      - action: system_log.write
+        data:
+          level: info
+          logger: opendtu.zero_export
+          message: >-
+            STARTUP: waiting {{ states('input_number.ems_start_grace') }} s before
+            the first inverter write.
 
 
 # =============================================================================
@@ -809,4 +872,22 @@ automation:
 #    check `<config>/packages/` , the `packages:` key in configuration.yaml
 #    (merge it into an existing homeassistant: block, do not add a second one!)
 #    and restart Home Assistant (helpers are only created at startup).
+#
+# K) NIGHT AND STARTUP: the inverters are powered by the sun, so at night they
+#    sleep and their limit entities may become unavailable. That is normal, not
+#    a fault, so the loop has two standby states:
+#      * STARTING - for "EMS start grace" seconds after every Home Assistant
+#        start. Nothing is written until the sensors delivered their first
+#        values and the ESS finished booting. Raise the grace time if your
+#        Victron takes longer than 2 minutes to come up.
+#      * NIGHT - sun below the horizon and less than 200 W PV. Nothing is
+#        written, no notification is raised, binary_sensor.ems_degraded stays
+#        off, and the DTU_BLIND / capacity / delivery checks stay quiet.
+#    Both states end by themselves: at sunrise the first grid import or the
+#    15 s heartbeat starts the loop again, and the limits are pushed up from
+#    whatever they were. Nothing has to be reset manually.
+#    Note: the *persistent* limit of the inverters is what they wake up with.
+#    Keep it low and let the loop raise it, or set it high if you prefer the
+#    inverters to start producing immediately at sunrise (then the loop trims
+#    within 15 s).
 # =============================================================================

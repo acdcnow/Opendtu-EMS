@@ -44,6 +44,7 @@ dies.
 | Battery full / charge taper | PV covers the house load only, grid stays at +20 W |
 | One inverter offline | Its capacity share is redistributed to the remaining inverters (up to 100 % each) |
 | OpenDTU powered off / unplugged | `DTU_BLIND`: no writes, a notification says why, the loop resumes by itself |
+| Night, or Home Assistant just started | `NIGHT` / `STARTING`: nothing is written and nothing alarms until real data arrives and PV is possible |
 | Battery data lost | Pure zero export: `PV = house load + 20 W` (no charge push that could cause an export) |
 | Grid meter lost | The second (backup) meter takes over seamlessly; only if **both** are gone the inverters are set to a fail-safe limit |
 | Loop stopped / HA restarted | A watchdog re-asserts a safe limit and raises a notification |
@@ -88,6 +89,8 @@ are immediate).
 | Mode | When | Action |
 |---|---|---|
 | `FULL` | all sensors plausible and fresh | `load + charge_limit + bias` |
+| `STARTING` | less than *EMS start grace* (default 120 s) since Home Assistant started | nothing — waiting for the first sensor values and for the ESS |
+| `NIGHT` | sun below the horizon and less than 200 W PV | nothing — the inverters are asleep, this is not a fault |
 | `DTU_BLIND` | no inverter limit entity is readable (OpenDTU off, MQTT down, ids changed) | nothing is written, `no inverter reachable` notification |
 | `NO_BATTERY` | SoC / battery power missing, stale, implausible or contradictory, or the test switch is on | `load + bias` — zero export only |
 | `GRID_BLIND` | no usable grid reading, or no solar reading to compute the house load | fail-safe limit (default 0 %) — export impossible |
@@ -116,8 +119,9 @@ Additionally:
 | `script.ems_apply` | writes one percentage to all governed inverters in parallel |
 | `automation.opendtu_ems_loop` | the control loop |
 | `automation.opendtu_ems_watchdog` | fail-safe + capacity/delivery monitoring |
+| `automation.opendtu_ems_boot` | records the start time, so the loop stays `STARTING` after a restart |
 
-Plus 12 helpers (`input_boolean`, `input_number`, `input_datetime`) — see
+Plus 17 helpers (3 switches, 12 numbers, 2 date/times) — see
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Requirements
@@ -168,6 +172,10 @@ knowing:
 Healthy readings while the sun is up: mode `FULL`, `source` = `shelly`, `active` = 3,
 `EMS PV delivery` near 100 %, `sensor.ems_grid_power` a few watts **positive**, and
 `input_datetime.ems_last_apply` never older than 3 minutes.
+
+Two modes are normal and not a fault: `NIGHT` (sun down — the inverters are asleep) and
+`STARTING` (up to `input_number.ems_start_grace`, default 120 s, after every Home Assistant
+start — nothing is written until the sensors and the ESS are up). Both end by themselves.
 
 When something is off the system reports it itself: `binary_sensor.ems_degraded` turns on and
 one of the notifications appears (`no inverter reachable`, `PV capacity short`,

@@ -9,6 +9,8 @@ Everything the package creates, what it means and how to tune it.
 | Mode | Entered when | Target written |
 |---|---|---|
 | `FULL` | SoC and battery power are fresh and plausible, at least one grid meter is alive, solar is readable, at least one inverter is reachable | `load + charge_limit + bias`, clamped to the reachable capacity |
+| `STARTING` | less than `EMS start grace` (default 120 s) since the Home Assistant start event | nothing — waiting for the first sensor values and for the ESS to boot |
+| `NIGHT` | `sun.sun` is `below_horizon` **and** PV is below 200 W | nothing — solar-powered inverters sleep, this is a normal standby state |
 | `DTU_BLIND` | **no** inverter limit entity is readable (OpenDTU powered off, MQTT broker down, entity ids changed) | nothing — the loop stops writing and the watchdog raises *no inverter reachable* |
 | `GRID_BLIND` | neither grid meter has a value and a recent update, **or** the solar sensor is not readable while inverters are reachable (the house load cannot be computed) | `input_number.ems_failsafe_pct` (default 0 %) |
 | `NO_BATTERY` | SoC or battery power missing / stale (> 120 s power, > 300 s SoC) / outside 0–100 %, or the test switch is on | `load + bias` (zero export only — the charge term is dropped) |
@@ -50,12 +52,14 @@ meters disagree.
 | `ems_settle_seconds` | 12 | s | Wait time after every write, so the loop does not chase the ESS ramp. Must be **< 15 s** (the heartbeat). |
 | `ems_max_step_pct` | 10 | % | Maximum *increase* per write. Decreases are always immediate. |
 | `ems_delivery_short` | 0 | – | Internal counter of the delivery check. Do not edit (a manual change only silences/triggers the notification). |
+| `ems_start_grace` | 120 | s | After a Home Assistant start nothing is written for this long, so the sensors deliver their first values and the ESS can finish booting. Raise it if your Victron needs longer than 2 minutes. |
 
 ### Date/time
 
 | Helper | Meaning |
 |---|---|
 | `input_datetime.ems_last_apply` | Timestamp of the last write. Used for the hysteresis (`180 s` re-assert) and as the watchdog heartbeat. |
+| `input_datetime.ems_started_at` | Timestamp of the last Home Assistant start, written by `automation.opendtu_ems_boot`. Drives the `STARTING` mode. |
 
 ---
 

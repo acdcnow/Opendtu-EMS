@@ -6,6 +6,8 @@ Work through the symptom table first, then the detail sections.
 |---|---|---|
 | **No `ems_*` entities at all** | `configuration.yaml`, Logs | the package was not loaded — see [below](#the-ems-entities-do-not-appear-at-all) |
 | `sensor.ems_mode` is `OFF` | `input_boolean.ems_enabled` | master switch off |
+| `sensor.ems_mode` is `NIGHT` | `sun.sun`, PV | normal at night — not a fault |
+| `sensor.ems_mode` is `STARTING` | `input_datetime.ems_started_at` | normal for `EMS start grace` seconds after a restart |
 | `sensor.ems_mode` is `DTU_BLIND` | `sensor.ems_inverter_capacity` = 0 | OpenDTU off, MQTT down, ids changed |
 | `sensor.ems_mode` is `GRID_BLIND` | `sensor.ems_grid_power` → `source`, `sensor.solarleistung_gesamt` | both meters dead, renamed or stale — or the solar sensor is gone |
 | `sensor.ems_mode` is `NO_BATTERY` | `sensor.serialbattery_seplos_*` | SoC/power sensor unavailable, stale or out of range |
@@ -43,7 +45,7 @@ OpenDTU — the package is not loaded. Check, in this order:
    configuration*. After the restart look at Settings → Logs for `Invalid config` and for
    `Package packages/... setup failed` — a single YAML or Jinja error rejects the whole file.
 6. **Verify what should exist**: Search `ems_` in Developer tools → States (6 entities),
-   Settings → Automations (2), Settings → Helpers (12, search "EMS").
+   Settings → Automations (3), Settings → Helpers (17, search "EMS").
 
 As a quick sanity check of the file itself, you can run the repository test suite locally:
 
@@ -51,6 +53,18 @@ As a quick sanity check of the file itself, you can run the repository test suit
 pip install pyyaml jinja2
 python tests/validate_package.py packages/opendtu_ems.yaml
 ```
+
+## Mode is NIGHT or STARTING
+
+Both are normal. `NIGHT` means the sun is below the horizon *and* PV is under 200 W — the
+solar-powered inverters are asleep, so there is nothing to control; no writes, no
+notifications, and `binary_sensor.ems_degraded` stays off. `STARTING` means Home Assistant
+started less than `EMS start grace` seconds ago; it prevents half-initialised sensors or an
+ESS that is still booting from causing a wrong write. Both end by themselves — at sunrise, or
+when the grace time is over.
+
+If you start Home Assistant at night, the expected sequence is: `STARTING` for two minutes,
+then `NIGHT` until the sun comes up, then `FULL` (or `DTU_BLIND` if the DTU is really off).
 
 ## Mode is DTU_BLIND
 

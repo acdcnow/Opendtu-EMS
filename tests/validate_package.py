@@ -178,6 +178,23 @@ CONTROL_CASES = {
                               "DTU_BLIND", "shelly", -234, 0, 0, 0.0, True),
     "solar dead, inverters ok": ({**BASE, "sensor.solarleistung_gesamt": "unavailable"},
                                   "GRID_BLIND", "shelly", -234, 4700, 3, 0.0, True),
+    # night and startup: standby, inverters asleep, nothing to control
+    "night (inverters asleep)": ({**BASE, "sun.sun": "below_horizon",
+                                 "sensor.solarleistung_gesamt": "0",
+                                 I1: "unavailable", I2: "unavailable",
+                                 I3: "unavailable"},
+                                "NIGHT", "shelly", -234, 0, 0, 0.0, True),
+    "night (inverters reachable)": ({**BASE, "sun.sun": "below_horizon",
+                                     "sensor.solarleistung_gesamt": "0"},
+                                    "NIGHT", "shelly", -234, 4700, 3, 0.0, True),
+    "start grace active": ({**BASE,
+                            "__attr:input_datetime.ems_started_at:timestamp":
+                                REF.timestamp() - 30},
+                           "STARTING", "shelly", -234, 4700, 3, 59.3, True),
+    "start grace elapsed": ({**BASE,
+                             "__attr:input_datetime.ems_started_at:timestamp":
+                                 REF.timestamp() - 600},
+                            "FULL", "shelly", -234, 4700, 3, 59.3, True),
     # Victron ramp: slew limit and settle time
     "slew: rise is limited": ({**BASE, "input_number.ems_max_step_pct": "10",
                                S: "500", V: "500"},
@@ -379,6 +396,25 @@ def main(argv: list[str]) -> int:
             fails.append((f"dtu handling {mode}", why))
         print(f"  mode {mode:<11} notify={alert:<6} loop-writes={writes:<6} "
               f"{'OK' if not why else '!! ' + '; '.join(why)}")
+
+    print("\n== standby states (normal, must not alarm or write) ==")
+    # OFF is not tested here: it is blocked by the first condition (the master
+    # switch) and is covered by the "kill switch off" control scenario.
+    for mode in ("STARTING", "NIGHT"):
+        data = {**BASE, "sensor.ems_mode": mode,
+                "__attr:sensor.ems_grid_power:source": "shelly"}
+        writes = render(dtu_cond, data)
+        degraded = render(bsens["ems_degraded"]["state"], data)
+        why = []
+        if writes != "False":
+            why.append(f"writes={writes}")
+        if degraded != "False":
+            why.append(f"degraded={degraded}")
+        if why:
+            fails.append((f"standby {mode}", why))
+        print(f"  mode {mode:<10} loop-writes={writes:<6} degraded={degraded:<6} "
+              f"{'OK' if not why else '!! ' + '; '.join(why)}")
+
     # a missing inverter must not be reported as a capacity shortfall
     for active, expect in ((0, False), (2, True)):
         data = {**BASE, "sensor.ems_mode": "FULL",

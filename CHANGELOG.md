@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-09-20
+
+### Added
+
+- **`STARTING` mode**: after every Home Assistant start nothing is written for
+  `input_number.ems_start_grace` seconds (default 120). This waits for the first sensor values
+  and for the ESS to boot, instead of acting on half-initialised data. Recorded by the new
+  `automation.opendtu_ems_boot` in the new helper `input_datetime.ems_started_at`.
+- **`NIGHT` mode**: sun below the horizon and less than 200 W PV means the solar-powered
+  inverters are asleep. The loop writes nothing, raises no notification, and
+  `binary_sensor.ems_degraded` stays off. Starting Home Assistant at night therefore no longer
+  produces a false `DTU_BLIND` alarm, and the loop takes over by itself at sunrise.
+- `input_number.ems_start_grace` helper.
+- TROUBLESHOOTING section *Mode is NIGHT or STARTING*.
+
+### Changed
+
+- In standalone mode (`STARTING` / `NIGHT` / `DTU_BLIND`) the loop's write condition and the
+  watchdog's stale check stay quiet, because not writing is the correct behaviour then.
+- README: standby states documented in the mode table and the day-to-day section.
+
 ## [1.2.0] - 2026-09-20
 
 ### Added
