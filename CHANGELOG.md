@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Documentation
+
+- INSTALL, README and TROUBLESHOOTING now show the two valid ways of enabling packages and warn
+  about the two failure modes that produce
+  `Setup of package 'input_boolean' failed: Integration 'ems_enabled' not found.` — the package file
+  being used *as* the packages mapping (`packages: !include <this file>` without a name), and
+  `!include_dir_merge_named` (merges the keys inside the files instead of using the file names).
+
 ## [1.3.0] - 2026-09-20
 
 ### Added

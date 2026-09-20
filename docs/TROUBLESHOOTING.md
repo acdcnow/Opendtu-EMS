@@ -5,6 +5,7 @@ Work through the symptom table first, then the detail sections.
 | Symptom | Look at | Likely cause |
 |---|---|---|
 | **No `ems_*` entities at all** | `configuration.yaml`, Logs | the package was not loaded — see [below](#the-ems-entities-do-not-appear-at-all) |
+| `Integration 'ems_enabled' not found` | `packages:` in `configuration.yaml` | the package file is used **as** the packages mapping — see [below](#setup-of-package-input_boolean-failed) |
 | `sensor.ems_mode` is `OFF` | `input_boolean.ems_enabled` | master switch off |
 | `sensor.ems_mode` is `NIGHT` | `sun.sun`, PV | normal at night — not a fault |
 | `sensor.ems_mode` is `STARTING` | `input_datetime.ems_started_at` | normal for `EMS start grace` seconds after a restart |
@@ -21,6 +22,54 @@ Work through the symptom table first, then the detail sections.
 | *fail-safe active* notification | `automation.opendtu_ems_loop` | the loop stopped writing (disabled, error, restart) |
 
 ---
+
+## Setup of package 'input_boolean' failed
+
+Typical log output:
+
+```
+Setup of package 'input_boolean' failed: Integration 'ems_enabled' not found.
+Setup of package 'input_number' failed: Integration 'ems_manual_pct' not found.
+Setup of package 'template' failed: Invalid package definition 'template': expected a mapping.
+Setup of package 'automation' failed: Invalid package definition 'automation': expected a mapping.
+```
+
+**What it means:** `packages:` points *at the package file itself*. Home Assistant then treats the
+top level keys of that file (`input_boolean`, `input_number`, `template`, `script`, `automation`)
+as package **names**, and their children (`ems_enabled`, `ems_manual_pct`, …) as integration
+domains — hence "Integration 'ems_enabled' not found". The two "expected a mapping" lines are the
+same problem: `template:` and `automation:` are lists, and a package must be a mapping.
+
+**Fix — use one of these two forms:**
+
+```yaml
+# A: folder - every file inside packages/ becomes one package
+homeassistant:
+  packages: !include_dir_named packages
+```
+
+```yaml
+# B: name the package explicitly (works with !include)
+homeassistant:
+  packages:
+    opendtu_ems: !include packages/opendtu_ems.yaml
+```
+
+**Broken:** `packages: !include packages/opendtu_ems.yaml` (no name) or a `packages:` mapping
+whose value is this file's content. Also broken: `!include_dir_merge_named packages`, which
+merges the *keys inside* the files instead of using the file names as package names.
+If your `packages:` already includes another file, add this one
+as a second key instead of replacing it:
+
+```yaml
+homeassistant:
+  packages:
+    my_existing_package: !include packages/other.yaml
+    opendtu_ems: !include packages/opendtu_ems.yaml
+```
+
+After the fix: **Check configuration** must be clean, then **restart** (helpers and templates are
+only created at startup).
 
 ## The EMS entities do not appear at all
 

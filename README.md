@@ -140,12 +140,21 @@ Plus 17 helpers (3 switches, 12 numbers, 2 date/times) — see
 ## Quick install
 
 1. Copy `packages/opendtu_ems.yaml` into your Home Assistant `<config>/packages/` folder.
-2. Make sure `configuration.yaml` contains:
+2. Enable packages in `configuration.yaml` — **one of these two forms**:
 
    ```yaml
    homeassistant:
      packages: !include_dir_named packages
    ```
+
+   ```yaml
+   homeassistant:
+     packages:
+       opendtu_ems: !include packages/opendtu_ems.yaml
+   ```
+
+   (A bare `packages: !include packages/opendtu_ems.yaml` does **not** work — it produces
+   `Setup of package 'input_boolean' failed: Integration 'ems_enabled' not found.`)
 
 3. Restart Home Assistant and **disable the automation this package replaces**.
 4. Check `sensor.ems_mode`: it should read `FULL` while the sun is up.

@@ -245,6 +245,19 @@ def main(argv: list[str]) -> int:
     for key, value in doc.items():
         print(f"  {key:<16} {type(value).__name__:<6} "
               f"n={len(value) if hasattr(value, '__len__') else '-'}")
+    # every top level key must be a config domain. If one is not, the file was
+    # loaded as the packages mapping itself (packages: !include <this file>),
+    # which Home Assistant reports as
+    # "Setup of package 'input_boolean' failed: Integration 'ems_enabled' not found."
+    known_domains = {"input_boolean", "input_number", "input_datetime", "input_text",
+                     "input_select", "template", "script", "automation", "sensor",
+                     "binary_sensor", "switch", "light", "cover", "scene", "group",
+                     "timer", "counter", "homeassistant"}
+    unknown = [key for key in doc if key not in known_domains]
+    if unknown:
+        fails.append(("top level keys are not config domains",
+                      [f"{unknown}: is 'packages:' pointing at this file instead of "
+                       "at a directory ('!include_dir_named packages')?"]))
     automations = {a["id"]: a for a in doc.get("automation", [])}
     for identifier in ("opendtu_ems_loop", "opendtu_ems_watchdog"):
         if identifier not in automations:

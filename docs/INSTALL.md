@@ -64,14 +64,40 @@ per-inverter power sensors as described in
 
    Use the Samba share, the *Studio Code Server* app, or the *File Editor* app.
 
-2. If `packages:` is not enabled yet, add it to `configuration.yaml`:
+2. Enable packages in `configuration.yaml`. **One of these two forms** (both are
+   correct, pick what fits your setup):
+
+   **A - folder (recommended, one file = one package):**
 
    ```yaml
    homeassistant:
      packages: !include_dir_named packages
    ```
 
+   **B - name the package explicitly** (use this when you prefer `!include`):
+
+   ```yaml
+   homeassistant:
+     packages:
+       opendtu_ems: !include packages/opendtu_ems.yaml
+   ```
+
+   > **Do not do this:** `packages: !include packages/opendtu_ems.yaml` without a name
+   > (or pointing `packages:` at this file in any other way). Home Assistant then reads the
+   > *top level keys of the package* as package names and reports
+   > `Setup of package 'input_boolean' failed: Integration 'ems_enabled' not found.` —
+   > one such line for every helper, plus
+   > `Setup of package 'template' failed: Invalid package definition 'template': expected a mapping.`
+   > The same happens if `packages:` already points at a file that contains this package,
+   > or if you used `!include_dir_merge_named packages` — that merges the *keys inside* the
+   > files, which turns them into package names as well. The correct directive for a folder of
+   > packages is `!include_dir_named` (one file = one package, named after the file).
+   > Also: if a `homeassistant:` block already exists, **merge** the `packages:` key into it
+   > instead of adding a second `homeassistant:` block.
+
 3. Check the file before reloading: Settings → Developer tools → **Check configuration**.
+   It must report no errors — the package errors above are not warnings, they mean nothing
+   was created.
 
 4. Restart Home Assistant (helpers cannot be created by a reload).
 
