@@ -50,7 +50,7 @@ drive the inverters to full output and export.
 Switch one inverter off in the OpenDTU web UI and watch its limit entity. If it turns
 `unavailable`, the redistribution works automatically. If it keeps its last value, add the
 per-inverter power sensors as described in
-[CONFIGURATION.md](docs/CONFIGURATION.md#optional-per-inverter-power-sensors).
+[CONFIGURATION.md](CONFIGURATION.md#optional-per-inverter-power-sensors).
 
 ---
 
@@ -115,6 +115,12 @@ per-inverter power sensors as described in
    > entity id; find it by searching `opendtu` in Developer tools → States.
 
 6. Disable the old automation. Two writers on the same inverters will fight each other.
+
+> **Not via HACS.** HACS has no repository type for packages (only `integration`, plugin/
+> dashboard, `theme`, `template`, `python_script`, `appdaemon`), so a custom repository entry
+> for this project would always report a non-compliant structure. The install is the file copy
+> in step 1 — HACS is only used for the four dashboard cards, see
+> [DASHBOARD.md](DASHBOARD.md#1-install-the-cards).
 
 ---
 

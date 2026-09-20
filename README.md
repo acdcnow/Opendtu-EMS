@@ -12,9 +12,9 @@ The loop holds the grid at a small import bias (+20 W by default) and gives the 
 every watt it can take — but it never exports, not even when a sensor or a micro-inverter
 dies.
 
-* one YAML file: helpers, template sensors, a script and two automations
+* one YAML file: helpers, template sensors, a script and three automations
 * a ready-made dashboard (`dashboards/ems-overview.yaml`) — see [docs/DASHBOARD.md](docs/DASHBOARD.md)
-* no custom integration, no HACS, no Node-RED, no AppDaemon
+* no custom integration, no Node-RED, no AppDaemon — and HACS is only needed for the dashboard cards (see [Can HACS install this?](#can-hacs-install-this))
 * written for **Home Assistant 2026.9+** (modern `triggers` / `conditions` / `actions` syntax)
 * 73 Jinja templates, parsed and rendered by CI on every push
 
@@ -28,6 +28,7 @@ dies.
 - [Entities it creates](#entities-it-creates)
 - [Requirements](#requirements)
 - [Quick install](#quick-install)
+- [Can HACS install this?](#can-hacs-install-this)
 - [Day-to-day use](#day-to-day-use)
 - [Why the relative limits](#why-the-relative-limits)
 - [Hardware backstop](#hardware-backstop)
@@ -173,6 +174,33 @@ Plus 21 helpers (3 switches, 16 numbers, 2 date/times) — see
 5. Set a **low persistent limit** on every inverter in the OpenDTU web UI (hardware backstop).
 
 Full walkthrough with verification and fail-safe tests: [docs/INSTALL.md](docs/INSTALL.md).
+
+## Can HACS install this?
+
+**No — HACS has no repository type for packages**, and this is a package: a YAML file that
+Home Assistant itself loads at start-up (`packages:` / `!include_dir_named`). HACS only knows
+six types — `integration` (`custom_components/<domain>/manifest.json`), `plugin`/dashboard (a
+`.js` file), `theme`, `template` (`.jinja`), `python_script` and `appdaemon` — so there is
+nothing for it to copy into place. Adding this repository as a custom repository would end in
+*a structure that is not compliant*, whichever type you pick. That is why the install is a
+file copy.
+
+HACS is however used **for the dashboard cards** in `dashboards/ems-overview.yaml`:
+
+| Card | Repository | Type |
+|---|---|---|
+| Power Flow Card Plus | `flixlix/power-flow-card-plus` | Dashboard |
+| Mushroom | `piitaya/lovelace-mushroom` | Dashboard |
+| ApexCharts Card | `RomRider/apexcharts-card` | Dashboard |
+| Mini Graph Card | `kalkih/mini-graph-card` | Dashboard |
+
+Search the name in HACS, Download, then paste the view — see
+[docs/DASHBOARD.md](docs/DASHBOARD.md#1-install-the-cards) for the details.
+
+> If you want HACS to manage the EMS itself, that needs a real Python integration in
+> `custom_components/` with a `manifest.json`, `config_flow.py` and entities. This repository
+> deliberately is not one: a package needs no code, no integration reload and no HACS —
+> one file, one restart.
 
 ## Day-to-day use
 

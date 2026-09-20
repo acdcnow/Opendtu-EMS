@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Documentation
+
+- README + INSTALL: a **"Can HACS install this?"** section. HACS has no repository type for
+  packages (`integration`, plugin/dashboard, `theme`, `template`, `python_script`, `appdaemon`
+  are the only ones it knows), so this repo cannot be added as a custom repository — the
+  install stays a file copy and HACS is only used for the four dashboard cards.
+- GitHub repository topics added (home-assistant, hacs, opendtu, hoymiles, zero-export,
+  energy-management, ems, victron, shelly, solar, battery).
+
 ## [1.5.0] - 2026-09-20
 
 ### Fixed — the battery was not charged at full power

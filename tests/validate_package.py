@@ -808,6 +808,37 @@ def main(argv: list[str]) -> int:
         print(f"  capacity alert with {active} active -> {got:<6}"
               f" (expect {expect})")
 
+    # --- 5. documentation links -------------------------------------------
+    print("\n== documentation links ==")
+    md_files = [ROOT / "README.md", ROOT / "CHANGELOG.md",
+                *sorted((ROOT / "docs").glob("*.md"))]
+
+    def slug(heading: str) -> str:
+        """GitHub's heading anchor: lowercase, punctuation dropped, spaces -> '-'."""
+        return re.sub(r"\s+", "-", re.sub(r"[^\w\s-]", "", heading.strip().lower()))
+
+    anchors = {md.name: {slug(m.group(1)) for m in
+                         re.finditer(r"^#{1,6}\s+(.*)$", md.read_text(encoding="utf-8"), re.M)}
+               for md in md_files}
+    broken, checked = [], 0
+    for md in md_files:
+        for target in re.findall(r"\]\(([^)\s]+)\)", md.read_text(encoding="utf-8")):
+            if target.startswith(("http://", "https://", "mailto:")):
+                continue
+            checked += 1
+            path, _, fragment = target.partition("#")
+            resolved = (md.parent / path).resolve() if path else md
+            if path and not resolved.exists():
+                broken.append(f"{md.name} -> {target} (missing file)")
+            elif fragment and resolved.name in anchors \
+                    and fragment not in anchors[resolved.name]:
+                broken.append(f"{md.name} -> {target} (no such heading)")
+    if broken:
+        fails.append(("documentation links", broken))
+    print(f"  {checked} relative links checked, {len(broken)} broken")
+    for item in broken:
+        print(f"  !! {item}")
+
     print("\n== result ==")
     if fails:
         for name, why in fails:
