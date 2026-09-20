@@ -5,7 +5,9 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.1] - 2026-09-20
+
+Documentation and CI only — the package logic is unchanged from 1.3.0.
 
 ### Documentation
 
@@ -14,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Setup of package 'input_boolean' failed: Integration 'ems_enabled' not found.` — the package file
   being used *as* the packages mapping (`packages: !include <this file>` without a name), and
   `!include_dir_merge_named` (merges the keys inside the files instead of using the file names).
+
+### Added
+
+- `tests/validate_package.py` asserts that every top level key of the package is a config domain,
+  which catches that class of mistake before it reaches Home Assistant.
 
 ## [1.3.0] - 2026-09-20
 
