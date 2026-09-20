@@ -1,6 +1,6 @@
 # =============================================================================
 #  OpenDTU  ·  Battery-first / zero-export EMS      (Home Assistant 2026.9)
-#  version 1.3.1  ·  2026-09-20  ·  see CHANGELOG.md
+#  version 1.4.0  ·  2026-09-20  ·  see CHANGELOG.md
 # -----------------------------------------------------------------------------
 #  Drop-in replacement for the automation
 #  "OpenDTU: Battery-First Aggressive EMS (Math-Based)".
@@ -378,6 +378,28 @@ template:
           {%- elif exp < 300 -%}100
           {%- else -%}{{ ((act / exp) * 100) | round(0) }}{%- endif -%}
 
+      # --- house load --------------------------------------------------------
+      # From the energy balance at the metering point (grid + solar = load +
+      # battery charge) the house load is  solar + grid - battery_power, with
+      # battery_power signed (positive = charging). Handy for energy flow cards
+      # and as a sanity check: if this value ever looks odd, one of the three
+      # measurements is wrong.
+      - name: "EMS house load"
+        unique_id: ems_house_load
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        icon: mdi:home-lightning-bolt-outline
+        availability: >-
+          {{- has_value('sensor.ems_grid_power')
+              and has_value('sensor.solarleistung_gesamt')
+              and has_value('sensor.serialbattery_seplos_leistung') -}}
+        state: >-
+          {%- set grid = states('sensor.ems_grid_power') | float(0) -%}
+          {%- set solar = states('sensor.solarleistung_gesamt') | float(0) -%}
+          {%- set bat = states('sensor.serialbattery_seplos_leistung') | float(0) -%}
+          {{ (solar + grid - bat) | round(0) | int(0) }}
+
       # --- limit percentage to write (single source of truth) ---------------
       # FULL:       PV = house load + allowed charge power + bias
       #             = solar + grid + (charge_limit - battery_power) + bias
@@ -501,7 +523,7 @@ script:
 # =============================================================================
 automation:
   - id: opendtu_ems_loop
-    alias: "OpenDTU EMS - control loop"
+    alias: "OpenDTU EMS loop"
     description: >-
       Adjusts the three micro inverters so that the grid stays at a small import
       bias: as much PV as the house load plus the allowed battery charge power,
@@ -584,7 +606,7 @@ automation:
 # 6) WATCHDOG - detects "the loop stopped writing" and applies the fail-safe
 # =============================================================================
   - id: opendtu_ems_watchdog
-    alias: "OpenDTU EMS - watchdog / fail-safe"
+    alias: "OpenDTU EMS watchdog"
     description: >-
       If the control loop has not written a limit for longer than the timeout,
       the inverters are set to the fail-safe limit and a notification is raised.
@@ -731,7 +753,7 @@ automation:
 # 7) STARTUP MARKER - lets the loop stay in STARTING after a restart
 # =============================================================================
   - id: opendtu_ems_boot
-    alias: "OpenDTU EMS - startup marker"
+    alias: "OpenDTU EMS boot"
     description: >-
       Records the Home Assistant start time. sensor.ems_mode stays STARTING for
       "EMS start grace" seconds afterwards, so that neither half-initialised

@@ -71,6 +71,7 @@ meters disagree.
 | `sensor.ems_mode` | `FULL` / `NO_BATTERY` / `GRID_BLIND` / `OFF` | – |
 | `sensor.ems_inverter_capacity` | reachable inverter capacity in W | `active` = number of inverters counted, `current_pct` = value currently set on them |
 | `sensor.ems_pv_delivery` | produced / commanded output in % | `expected_w`, `actual_w` |
+| `sensor.ems_house_load` | house consumption in W (`solar + grid - battery`) | – |
 | `sensor.ems_limit_target` | percentage to write | `mode`, `grid`, `solar`, `active`, `capacity` |
 | `binary_sensor.ems_degraded` | `on` when degraded | – |
 

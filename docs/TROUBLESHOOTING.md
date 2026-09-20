@@ -93,8 +93,12 @@ OpenDTU — the package is not loaded. Check, in this order:
 5. **Check the configuration before restarting**: Settings → Developer tools → *Check
    configuration*. After the restart look at Settings → Logs for `Invalid config` and for
    `Package packages/... setup failed` — a single YAML or Jinja error rejects the whole file.
-6. **Verify what should exist**: Search `ems_` in Developer tools → States (6 entities),
+6. **Verify what should exist**: Search `ems_` in Developer tools → States (7 entities),
    Settings → Automations (3), Settings → Helpers (17, search "EMS").
+
+   Note that a YAML automation's entity id is the slug of its **alias**, not its `id:`
+   (`OpenDTU EMS loop` → `automation.opendtu_ems_loop`), and that the registry keeps an entity id
+   once it exists — after renaming an alias, search `opendtu` in Developer tools → States.
 
 As a quick sanity check of the file itself, you can run the repository test suite locally:
 

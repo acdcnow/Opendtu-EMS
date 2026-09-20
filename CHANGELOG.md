@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-09-20
+
+### Added
+
+- **Dashboard**: `dashboards/ems-overview.yaml` — a ready-made Lovelace view with the live energy
+  flow (Power Flow Card Plus), status chips for the EMS and Victron operation modes (Mushroom),
+  PV / house / grid / battery trends with the EMS limit on a second axis (ApexCharts Card), the
+  battery SoC graph (Mini Graph Card), the manual controls and the diagnostics.
+  `docs/DASHBOARD.md` explains which HACS cards are used and why, how to install them and how to
+  adapt the two `EDIT` markers (per-inverter sensors, Victron charge stage).
+- `sensor.ems_house_load` — house consumption derived from the energy balance
+  (`solar + grid - battery`), used by the flow card's home circle and handy as a sanity check.
+
+### Fixed
+
+- Shortened the automation **aliases** (`OpenDTU EMS loop`, `... watchdog`, `... boot`) so the
+  entity ids derived from them are the ones the documentation refers to. A YAML automation gets its
+  entity id from the slugified **alias**, not from the `id:` key — the previous longer aliases
+  produced entity ids ending in `_control_loop` / `_watchdog_fail_safe` / `_startup_marker`, which
+  did not match the docs.
+- CI now fails when a documented `automation.<id>` does not match a slug of the configured aliases,
+  when the dashboard references an entity the package does not create, or when the dashboard uses an
+  undocumented custom card.
+
+### Documentation
+
+- `docs/DASHBOARD.md` (new) plus README links; entity tables updated (7 EMS entities, 17 helpers,
+  3 automations).
+
 ## [1.3.1] - 2026-09-20
 
 Documentation and CI only — the package logic is unchanged from 1.3.0.

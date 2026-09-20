@@ -104,8 +104,15 @@ per-inverter power sensors as described in
 5. Verify the entities exist — Developer tools → States:
 
    `sensor.ems_mode`, `sensor.ems_grid_power`, `sensor.ems_inverter_capacity`,
-   `sensor.ems_pv_delivery`, `sensor.ems_limit_target`, `binary_sensor.ems_degraded`,
-   `script.ems_apply`, `automation.opendtu_ems_loop`, `automation.opendtu_ems_watchdog`.
+   `sensor.ems_pv_delivery`, `sensor.ems_house_load`, `sensor.ems_limit_target`,
+   `binary_sensor.ems_degraded`, `script.ems_apply`,
+   `automation.opendtu_ems_loop`, `automation.opendtu_ems_watchdog`,
+   `automation.opendtu_ems_boot`.
+
+   > YAML automations derive their entity id from the **alias**, slugified — not from the `id:`
+   > key. That is why the aliases in this package are short (`OpenDTU EMS loop` →
+   > `automation.opendtu_ems_loop`). If you rename an alias later, the registry keeps the old
+   > entity id; find it by searching `opendtu` in Developer tools → States.
 
 6. Disable the old automation. Two writers on the same inverters will fight each other.
 

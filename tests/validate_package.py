@@ -258,6 +258,75 @@ def main(argv: list[str]) -> int:
         fails.append(("top level keys are not config domains",
                       [f"{unknown}: is 'packages:' pointing at this file instead of "
                        "at a directory ('!include_dir_named packages')?"]))
+
+    # YAML automations derive their entity id from the slugified ALIAS, not from
+    # their "id:" key. Every automation.<x> reference in the package and the docs
+    # must therefore match a slug of one of the configured aliases.
+    def slugify(text):
+        return re.sub(r"[^a-z0-9]+", "_", str(text).lower()).strip("_")
+
+    expected_automations = {f"automation.{slugify(a.get('alias'))}"
+                            for a in doc.get("automation", [])}
+    print(f"  automation entity ids: {', '.join(sorted(expected_automations))}")
+    also = {Path(ROOT / name) for name in ("README.md", "CHANGELOG.md")}
+    also |= set(ROOT.glob("docs/*.md"))
+    referenced_automations: set[str] = set()
+    for source in [path, *sorted(also)]:
+        if Path(source).exists():
+            referenced_automations |= set(
+                re.findall(r"automation\.[a-z0-9_]+", Path(source).read_text(encoding="utf-8")))
+    wrong_ids = sorted(referenced_automations - expected_automations)
+    if wrong_ids:
+        fails.append(("automation entity ids",
+                      [f"{wrong_ids} - the entity id is the slug of the alias, "
+                       f"not the 'id:' key"]))
+    print(f"  automation ids referenced in docs: "
+          f"{', '.join(sorted(referenced_automations)) or '-'}")
+
+    # --- 1c. dashboard references ----------------------------------------
+    dashboard = ROOT / "dashboards" / "ems-overview.yaml"
+    if dashboard.exists():
+        raw_dashboard = dashboard.read_text(encoding="utf-8")
+        cards = set(re.findall(r"\btype:\s*(custom:[a-z0-9-]+)", raw_dashboard))
+        allowed_cards = {"custom:power-flow-card-plus", "custom:mushroom-chips-card",
+                         "custom:apexcharts-card", "custom:mini-graph-card"}
+        unknown_cards = sorted(cards - allowed_cards)
+        if unknown_cards:
+            fails.append(("dashboard cards", [f"undocumented: {unknown_cards}"]))
+        created_entities = set()
+        for domain in ("input_boolean", "input_number", "input_datetime"):
+            created_entities |= {f"{domain}.{key}" for key in doc.get(domain, {})}
+        created_entities |= {f"script.{key}" for key in doc.get("script", {})}
+        created_entities |= expected_automations
+        for block in doc["template"]:
+            for domain, entities in block.items():
+                created_entities |= {f"{domain}.{slugify(e.get('name'))}" for e in entities}
+        dash = yaml.safe_load(raw_dashboard)
+        referenced: set[str] = set()
+
+        def walk(node):
+            if isinstance(node, dict):
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+            elif isinstance(node, str) and re.fullmatch(
+                    r"(?:sensor|binary_sensor|input_boolean|input_number|input_datetime"
+                    r"|script|automation)\.[a-z0-9_]+", node.strip()):
+                referenced.add(node.strip())
+
+        walk(dash)
+        ems_scope = ("sensor.ems_", "binary_sensor.ems_", "input_", "script.ems",
+                     "automation.opendtu")
+        dangling = sorted(e for e in referenced
+                          if e.startswith(ems_scope) and e not in created_entities)
+        if dangling:
+            fails.append(("dashboard entities", [f"not created by the package: {dangling}"]))
+        external = sorted(referenced - created_entities - set(dangling))
+        print(f"  dashboard: {len(cards)} custom card types, "
+              f"{len(referenced)} entity references")
+        print(f"  existing (external) sensors used: {', '.join(external) or '-'}")
     automations = {a["id"]: a for a in doc.get("automation", [])}
     for identifier in ("opendtu_ems_loop", "opendtu_ems_watchdog"):
         if identifier not in automations:
@@ -365,6 +434,30 @@ def main(argv: list[str]) -> int:
             fails.append((name, why))
         print(f"  {'OK ' if not why else '!! '}{name:<30}{got['mode']:>11}"
               f"{got['target']:>7}%   {'; '.join(why)}")
+
+    print("\n== house load (sensor.ems_house_load) ==")
+    load_tpl = sensors["ems_house_load"]["state"]
+    load_avail = sensors["ems_house_load"]["availability"]
+    for name, data, expected in (
+            ("normal: 3000 - 234 - 1200",
+             {**BASE, "sensor.ems_grid_power": "-234"}, 1566),
+            ("exporting 900 W",
+             {**BASE, "sensor.ems_grid_power": "-900", S: "-900", V: "-900"}, 900),
+            ("battery discharging 800 W",
+             {**BASE, "sensor.ems_grid_power": "-234",
+              "sensor.serialbattery_seplos_leistung": "-800"}, 3566),
+            ("battery sensor gone",
+             {**BASE, "sensor.ems_grid_power": "-234",
+              "sensor.serialbattery_seplos_leistung": "unavailable"}, None)):
+        available = render(load_avail, data) == "True"
+        got = round(float(render(load_tpl, data))) if available else None
+        why = []
+        if got != expected:
+            why.append(f"load={got} expected={expected}")
+        if why:
+            fails.append((f"house load {name}", why))
+        print(f"  {'OK ' if not why else '!! '}{name:<34}available={available!s:<6}"
+              f"load={got}")
 
     print("\n== delivery check ==")
     for name, (data, ratio, notify, expected_w) in DELIVERY_CASES.items():

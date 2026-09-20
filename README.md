@@ -13,6 +13,7 @@ every watt it can take — but it never exports, not even when a sensor or a mic
 dies.
 
 * one YAML file: helpers, template sensors, a script and two automations
+* a ready-made dashboard (`dashboards/ems-overview.yaml`) — see [docs/DASHBOARD.md](docs/DASHBOARD.md)
 * no custom integration, no HACS, no Node-RED, no AppDaemon
 * written for **Home Assistant 2026.9+** (modern `triggers` / `conditions` / `actions` syntax)
 * 40 Jinja templates, parsed and rendered by CI on every push
@@ -115,6 +116,7 @@ Additionally:
 | `sensor.ems_mode` | `FULL`, `NO_BATTERY`, `GRID_BLIND` or `OFF` |
 | `sensor.ems_inverter_capacity` | reachable inverter capacity in W, attributes `active`, `current_pct` |
 | `sensor.ems_pv_delivery` | produced vs. commanded output in %, attributes `expected_w`, `actual_w` |
+| `sensor.ems_house_load` | house consumption in W, derived from `solar + grid - battery` |
 | `sensor.ems_limit_target` | the percentage to write, attributes `mode`, `grid`, `solar`, `active`, `capacity` |
 | `binary_sensor.ems_degraded` | on whenever the system runs degraded |
 | `script.ems_apply` | writes one percentage to all governed inverters in parallel |
@@ -177,7 +179,7 @@ knowing:
 | see how many inverters answer | attribute `active` of `sensor.ems_inverter_capacity` |
 | see when it last wrote | `input_datetime.ems_last_apply` |
 | get a diagnostic line per run | `input_boolean.ems_verbose` plus the `logger` entry from [docs/INSTALL.md](docs/INSTALL.md#6-verify-the-first-runs) |
-| check why it did nothing | Settings → Automations → *OpenDTU EMS - control loop* → ⋮ → Traces |
+| check why it did nothing | Settings → Automations → *OpenDTU EMS loop* → ⋮ → Traces |
 
 Healthy readings while the sun is up: mode `FULL`, `source` = `shelly`, `active` = 3,
 `EMS PV delivery` near 100 %, `sensor.ems_grid_power` a few watts **positive**, and
@@ -224,6 +226,7 @@ inverters, so never run it next to this package.
 ## Documentation
 
 * [docs/INSTALL.md](docs/INSTALL.md) — step by step: prerequisites, install, verification, fail-safe tests
+* [docs/DASHBOARD.md](docs/DASHBOARD.md) — the Lovelace view, the HACS cards used and how to adapt them
 * [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — every helper, tuning guide, dashboard entities
 * [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — symptoms, causes, fixes
 * [CHANGELOG.md](CHANGELOG.md)
