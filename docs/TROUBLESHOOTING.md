@@ -5,6 +5,7 @@ Work through the symptom table first, then the detail sections.
 | Symptom | Look at | Likely cause |
 |---|---|---|
 | **No `ems_*` entities at all** | `configuration.yaml`, Logs | the package was not loaded — see [below](#the-ems-entities-do-not-appear-at-all) |
+| **`<Plugin …> Repository structure for vX.Y.Z is not compliant`** in HACS | the HACS custom repository list | the repository was added to HACS, which has no type for packages — see [below](#hacs-repository-structure-is-not-compliant) |
 | `Integration 'ems_enabled' not found` | `packages:` in `configuration.yaml` | the package file is used **as** the packages mapping — see [below](#setup-of-package-input_boolean-failed) |
 | `sensor.ems_mode` is `OFF` | `input_boolean.ems_enabled` | master switch off |
 | `sensor.ems_mode` is `NIGHT` | `sun.sun`, PV | normal at night — not a fault |
@@ -24,6 +25,51 @@ Work through the symptom table first, then the detail sections.
 | *fail-safe active* notification | `automation.opendtu_ems_loop` | the loop stopped writing (disabled, error, restart) |
 
 ---
+
+## HACS: Repository structure is not compliant
+
+The full line looks like this:
+
+```
+<Plugin acdcnow/opendtu-ems> Repository structure for v1.5.1 is not compliant
+```
+
+**What it means:** the repository was added to HACS as a *custom repository*, and HACS checked
+its file tree for the files that type requires. Nothing is wrong with your installation — HACS
+simply cannot handle a package:
+
+* `<Plugin …>` is the **type you selected** in the *Add custom repository* dialog (the frontend
+  calls it *Dashboard*, the backend calls it `plugin`).
+* `v1.5.1` is the **release** HACS looked at (with releases present it validates the latest
+  tag, not the default branch).
+* For a plugin HACS needs a JavaScript file named like the repository — `opendtu-ems.js`,
+  `opendtu-ems.umd.js`, `opendtu-ems-bundle.js` (or `lovelace-` stripped) in the repository
+  root, in `dist/`, or as a release asset. For plugins HACS installs into
+  `www/community/<repo>/` and registers the file as a Lovelace **resource of type `module`** —
+  which is why it must be JavaScript at all.
+
+No other type works either:
+
+| Type | HACS needs | This repository |
+|---|---|---|
+| Integration | `custom_components/opendtu_ems/manifest.json` | ✗ (a package has no Python) |
+| Dashboard (plugin) | `dist/opendtu-ems.js` or `opendtu-ems.js` in the root | ✗ |
+| Template | `hacs.json` + `opendtu-ems.jinja` in the root | ✗ |
+| Theme / Python script / AppDaemon | a theme `.yaml`, `.py`, or `apps/` in the root | ✗ |
+
+**Fix:** remove the entry — HACS → the ⋮ menu (top right) → *Custom repositories* → the
+repository → remove. It only removes the HACS entry, nothing on disk and nothing of the EMS:
+the package is installed by copying `packages/opendtu_ems.yaml`, and HACS is only used for the
+four dashboard cards.
+
+> Do **not** try to satisfy the check by pointing `filename` in a `hacs.json` at
+> `ems-overview.yaml`. The structure check would pass, but HACS would then register that YAML
+> file as a JavaScript module for the frontend, which the browser fails to load — a broken
+> resource instead of a clear message.
+
+HACS *could* host parts of this project (a JavaScript dashboard strategy, or a real custom
+integration for the EMS); those would be new components, see
+[README](../README.md#can-hacs-install-this).
 
 ## Setup of package 'input_boolean' failed
 

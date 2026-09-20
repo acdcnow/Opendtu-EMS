@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Documentation
+
+- `docs/TROUBLESHOOTING.md`: the exact HACS error
+  (`<Plugin …> Repository structure for vX.Y.Z is not compliant`) explained — what the category
+  prefix and the version in the message mean, why no HACS type fits a package, and how to
+  remove the entry (plus why pointing `hacs.json` at the dashboard YAML is not a workaround).
+
 ## [1.5.1] - 2026-09-20
 
 **Documentation and CI only.** The package itself is unchanged (the version comment in the
