@@ -408,6 +408,20 @@ def main(argv: list[str]) -> int:
             fails.append((identifier, ["automation missing"]))
     print(f"  automations: {', '.join(automations)}")
 
+    # the header carries the version of the released file, so a release without
+    # a changelog entry is caught here
+    header_line = next((line for line in path.read_text(encoding="utf-8")[:600].splitlines()
+                        if "version" in line), "")
+    version_match = re.search(r"version\s+(\d+\.\d+\.\d+)", header_line)
+    changelog_path = ROOT / "CHANGELOG.md"
+    if version_match and changelog_path.exists():
+        version = version_match.group(1)
+        changelog_text = changelog_path.read_text(encoding="utf-8")
+        print(f"  package version: {version}")
+        if f"## [{version}]" not in changelog_text:
+            fails.append(("package version vs changelog",
+                          [f"no '## [{version}]' section in CHANGELOG.md"]))
+
     # --- 2. Jinja syntax --------------------------------------------------
     print("\n== jinja syntax ==")
     env = make_env(BASE)

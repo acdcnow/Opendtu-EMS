@@ -5,16 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.5.1] - 2026-09-20
+
+**Documentation and CI only.** The package itself is unchanged (the version comment in the
+header is the only difference to 1.5.0), so there is nothing to re-copy if you already run
+1.5.0.
 
 ### Documentation
 
-- README + INSTALL: a **"Can HACS install this?"** section. HACS has no repository type for
-  packages (`integration`, plugin/dashboard, `theme`, `template`, `python_script`, `appdaemon`
-  are the only ones it knows), so this repo cannot be added as a custom repository — the
-  install stays a file copy and HACS is only used for the four dashboard cards.
+- README + `docs/INSTALL.md`: a **"Can HACS install this?"** section. HACS has no repository
+type for packages — it only knows `integration`, plugin/dashboard, `theme`, `template`,
+`python_script` and `appdaemon` — so this repository can never pass the structure check and
+the install stays a file copy. HACS is used for the four dashboard cards only.
+- Fixed a broken relative link in `docs/INSTALL.md` (`docs/CONFIGURATION.md`, which from
+inside `docs/` resolves to `docs/docs/CONFIGURATION.md`).
 - GitHub repository topics added (home-assistant, hacs, opendtu, hoymiles, zero-export,
-  energy-management, ems, victron, shelly, solar, battery).
+energy-management, ems, victron, shelly, solar, battery) — the only HACS action check that
+was failing, and the reason the repository was hard to find.
+
+### Tests
+
+- New guard: every relative link **and** heading anchor in `README.md`, `CHANGELOG.md` and
+`docs/` is verified (39 links). It found the broken link above.
+- New guard: the version in the package header must have a `## [x.y.z]` section in this
+changelog, so a release can no longer be tagged without its entry.
 
 ## [1.5.0] - 2026-09-20
 
