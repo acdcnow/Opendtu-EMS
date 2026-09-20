@@ -116,6 +116,22 @@ cards:
         icon_color: indigo
         tap_action:
           action: more-info
+      # how much charge power the battery is offered / how much of the limit is
+      # meant for charging - the two numbers that explain the law
+      - type: template
+        entity: sensor.ems_limit_target
+        icon: mdi:battery-arrow-up-outline
+        content: >-
+          {%- set a = state_attr('sensor.ems_limit_target', 'allowance') -%}
+          {%- set p = state_attr('sensor.ems_limit_target', 'charge_push') -%}
+          {%- if a is not none -%}
+            offer {{ a }} W · push {{ p }} W
+          {%- else -%}offer – W{%- endif -%}
+        icon_color: >-
+          {{ 'green' if (state_attr('sensor.ems_limit_target', 'charge_push') | float(0)) > 0
+             else 'grey' }}
+        tap_action:
+          action: more-info
       - type: template
         entity: sensor.ems_inverter_capacity
         icon: mdi:solar-panel
@@ -252,6 +268,10 @@ cards:
           - entity: input_number.ems_max_step_pct
           - entity: input_number.ems_hysteresis_pct
           - entity: input_number.ems_failsafe_pct
+          - entity: input_number.ems_soc_stop
+          - entity: input_number.ems_export_tolerance
+          - entity: input_number.ems_export_grace
+          - entity: input_number.ems_reprobe_seconds
           - entity: input_datetime.ems_last_apply
 
   # ---------------------------------------------------------------------------
@@ -281,6 +301,11 @@ cards:
       **SoC** {{ states('sensor.serialbattery_seplos_ladestand') }} % ·
       **battery** {{ states('sensor.serialbattery_seplos_leistung') }} W
 
+
+      **offer (learned)** {{ states('input_number.ems_charge_allowance') }} W ·
+      **asked for charging** {{ state_attr('sensor.ems_limit_target', 'charge_push') }} W ·
+      **export ticks** {{ states('input_number.ems_export_ticks') }}
+
   - type: entities
     title: Source sensors
     show_header_toggle: false
@@ -293,3 +318,5 @@ cards:
       - entity: binary_sensor.ems_degraded
       - entity: sensor.ems_pv_delivery
       - entity: sensor.ems_inverter_capacity
+      - entity: input_number.ems_charge_allowance
+      - entity: input_number.ems_export_ticks

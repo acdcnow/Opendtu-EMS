@@ -77,11 +77,24 @@ Both are marked `EDIT` in the file and degrade gracefully if you leave them alon
 | Card | Entities |
 |---|---|
 | Energy flow | grid `sensor.ems_grid_power` (secondary info: which meter, `source`), PV `sensor.solarleistung_gesamt` (secondary info: the three inputs), battery `sensor.serialbattery_seplos_leistung` + SoC `sensor.serialbattery_seplos_ladestand`, house `sensor.ems_house_load` with `override_state: true` |
-| Chips | `sensor.ems_mode` (+ Victron stage), `sensor.ems_limit_target`, `sensor.ems_inverter_capacity` (`active`, W), `sensor.ems_pv_delivery`, `binary_sensor.ems_degraded` |
+| Chips | `sensor.ems_mode` (+ Victron stage), `sensor.ems_limit_target`, **charge offer / push** (`allowance` and `charge_push` attributes of `sensor.ems_limit_target`), `sensor.ems_inverter_capacity` (`active`, W), `sensor.ems_pv_delivery`, `binary_sensor.ems_degraded` |
 | Trends | `sensor.solarleistung_gesamt`, `sensor.ems_house_load`, `sensor.ems_grid_power` (green below 0 = export, red above = import), `sensor.serialbattery_seplos_leistung`, `sensor.ems_limit_target` (%) |
 | SoC graph | `sensor.serialbattery_seplos_ladestand` |
-| Controls | `input_boolean.ems_enabled`, `input_number.ems_manual_pct`, `input_boolean.ems_simulate_battery_loss`, bias / settle / step / hysteresis / fail-safe, `input_datetime.ems_last_apply` |
-| Diagnostics | `sensor.ems_pv_delivery` attributes, `sensor.ems_inverter_capacity` attributes, `input_datetime.ems_started_at` |
+| Controls | `input_boolean.ems_enabled`, `input_number.ems_manual_pct`, `input_boolean.ems_simulate_battery_loss`, bias / settle / step / hysteresis / fail-safe, SoC stop, export tolerance / grace, charge re-probe, `input_datetime.ems_last_apply` |
+| Diagnostics | `sensor.ems_pv_delivery` attributes, `sensor.ems_inverter_capacity` attributes, `input_datetime.ems_started_at`, `input_number.ems_charge_allowance`, `input_number.ems_export_ticks` |
+
+### The charge offer chip
+
+`charge_push` is the part of the limit that is meant for charging, and `allowance` is what the
+battery is allowed to take right now:
+
+* `push` ≈ `offer` → the array is working for the battery (normal while charging)
+* `push` = 0 while the sun is up → either the learned `offer` has been cut (the battery is not
+taking it, see
+  [TROUBLESHOOTING](../docs/TROUBLESHOOTING.md#pv-is-cut-although-the-battery-could-take-it)) or
+  `EMS SoC stop charging` is reached and the battery is measurably idle
+* `offer` permanently below `EMS max charge power` → the battery (BMS CCL, CV phase,
+  temperature) is the bottleneck, not the EMS
 
 ### Why the sign conventions work without `invert_state`
 

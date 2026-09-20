@@ -16,7 +16,7 @@ dies.
 * a ready-made dashboard (`dashboards/ems-overview.yaml`) — see [docs/DASHBOARD.md](docs/DASHBOARD.md)
 * no custom integration, no HACS, no Node-RED, no AppDaemon
 * written for **Home Assistant 2026.9+** (modern `triggers` / `conditions` / `actions` syntax)
-* 40 Jinja templates, parsed and rendered by CI on every push
+* 73 Jinja templates, parsed and rendered by CI on every push
 
 ---
 
@@ -41,9 +41,9 @@ dies.
 
 | Situation | Behaviour |
 |---|---|
-| Battery can take power, sun is available | PV is driven to `house load + allowed charge power`, so the surplus goes into the battery and the grid stays at +20 W |
-| Nothing more can be charged | PV is cut back until the export stops (the loop **never raises PV while the grid exports**) |
-| Battery full / charge taper | PV covers the house load only, grid stays at +20 W |
+| Battery can take power, sun is available | PV is allowed to reach `house load + allowed charge power`, so every watt the battery can take is offered to it and the grid stays at +20 W. A momentary export (Victron ramp, a load switching off) does **not** cut the array |
+| The battery takes less than it is offered | The loop learns the real acceptance (`EMS charge allowance`) after `EMS export grace` and works at that level from then on — so the export stops without starving the charge, and it probes upwards again by itself |
+| Battery full (SoC `EMS SoC stop charging`, default 100 %) | PV covers the house load only, grid stays at +20 W. The stop counts only while the battery is measurably not charging, so a wrong SoC cannot cut the array |
 | One inverter offline | Its capacity share is redistributed to the remaining inverters (up to 100 % each) |
 | OpenDTU powered off / unplugged | `DTU_BLIND`: no writes, a notification says why, the loop resumes by itself |
 | Night, or Home Assistant just started | `NIGHT` / `STARTING`: nothing is written and nothing alarms until real data arrives and PV is possible |
@@ -63,28 +63,38 @@ grid + solar = load + battery_charge
 which turns the target into a very simple statement:
 
 ```
-target_PV = load + charge_limit + bias - 20 W
-          = solar + grid + (charge_limit - battery_power) + bias
+target_PV = load + allowed charge power + bias (+20 W)
+          = solar + grid + (allowance - battery_power) + bias
 ```
 
-The `solar + grid` trick measures the house load **without a load sensor**, and because the
-term is recomputed from fresh measurements every cycle the loop is stateless — if the sun
-cannot deliver, nothing winds up.
+leading to the same figure from two directions: `solar + grid` measures the house load
+**without a load sensor**, and the energy balance says the house load plus what the battery
+can take is exactly what the array may produce.
 
-Two guards make the difference between this and a naive implementation:
+The **measured export does not appear in the formula**. That is the important part: a
+Victron that is still ramping up, a load switching off or a lagging meter used to be read as
+"too much PV" and cut the array to the house load — which also cut the charge power that the
+battery was about to take, so the charge could never grow. Battery first means the array is
+only reduced when the battery really cannot use the power, and that is detected by
+measurement, not by an export that may be transient:
 
-1. **No charge push while exporting.** Raising the PV limit cannot make the Victron charge
-   faster — the charger, not the PV, decides the charge current. If the grid is already
-   exporting, the charge term is dropped and only the load is covered. Without this guard
-   a battery that cannot absorb (BMS current limit, absorption taper, fault) causes a
-   runaway export.
+1. **Charge acceptance learning.** If the grid exports more than `EMS export tolerance`
+   (150 W) for longer than `EMS export grace` (60 s) while the battery takes measurably less
+   than it is offered, the offer (`EMS charge allowance`) is cut to what the battery is
+   really taking — at most by half per step, so one bad reading cannot stop the charge. The
+   estimate is reset to `EMS max charge power` whenever the battery discharges (a new charge
+   cycle), and probed upwards again (×1.5) after `EMS charge re-probe` (15 min) without an
+   export. So a battery that frees up is charged at full power again by itself.
 2. **Signed battery power.** Discharging must *increase* the target, so the raw signed
    value is used, not a value clamped at zero.
+3. **The SoC never throttles the array.** The only SoC effect is the stop above, and it is
+   corroborated by the battery power. A stuck or badly calibrated SoC can waste nothing.
 
 The loop reacts to grid crossings (5 s debounce) plus a 15 s heartbeat, writes with a
 hysteresis of 2 %, re-asserts the limit every 180 s and, to cope with the Victron ramp,
 waits `EMS settle time` after every write and limits increases to `EMS max step` (decreases
-are immediate).
+are immediate). It also runs at night for the learning (that is when the battery discharges
+and the estimate is reset) but writes nothing then.
 
 ## Fail-safe ladder
 
@@ -117,14 +127,14 @@ Additionally:
 | `sensor.ems_inverter_capacity` | reachable inverter capacity in W, attributes `active`, `current_pct` |
 | `sensor.ems_pv_delivery` | produced vs. commanded output in %, attributes `expected_w`, `actual_w` |
 | `sensor.ems_house_load` | house consumption in W, derived from `solar + grid - battery` |
-| `sensor.ems_limit_target` | the percentage to write, attributes `mode`, `grid`, `solar`, `active`, `capacity` |
+| `sensor.ems_limit_target` | the percentage to write, attributes `mode`, `grid`, `solar`, `active`, `capacity`, `allowance` (W the battery may take), `charge_push` (W asked from the array) |
 | `binary_sensor.ems_degraded` | on whenever the system runs degraded |
 | `script.ems_apply` | writes one percentage to all governed inverters in parallel |
 | `automation.opendtu_ems_loop` | the control loop |
 | `automation.opendtu_ems_watchdog` | fail-safe + capacity/delivery monitoring |
 | `automation.opendtu_ems_boot` | records the start time, so the loop stays `STARTING` after a restart |
 
-Plus 17 helpers (3 switches, 12 numbers, 2 date/times) — see
+Plus 21 helpers (3 switches, 16 numbers, 2 date/times) — see
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Requirements
@@ -175,6 +185,8 @@ knowing:
 | test the "battery data lost" path | `input_boolean.ems_simulate_battery_loss` → on |
 | write a fixed limit by hand | `input_number.ems_manual_pct` → 0…100 (`-1` = automatic) |
 | see what the loop is doing | `sensor.ems_mode`, `sensor.ems_limit_target`, `sensor.ems_pv_delivery` |
+| see how much charge power the battery is offered | attribute `allowance` of `sensor.ems_limit_target`, `input_number.ems_charge_allowance` |
+| see how much charge power the array is asked for | attribute `charge_push` of `sensor.ems_limit_target` |
 | see which meter is used | attribute `source` of `sensor.ems_grid_power` |
 | see how many inverters answer | attribute `active` of `sensor.ems_inverter_capacity` |
 | see when it last wrote | `input_datetime.ems_last_apply` |
@@ -182,8 +194,16 @@ knowing:
 | check why it did nothing | Settings → Automations → *OpenDTU EMS loop* → ⋮ → Traces |
 
 Healthy readings while the sun is up: mode `FULL`, `source` = `shelly`, `active` = 3,
-`EMS PV delivery` near 100 %, `sensor.ems_grid_power` a few watts **positive**, and
-`input_datetime.ems_last_apply` never older than 3 minutes.
+`EMS PV delivery` near 100 %, `input_number.ems_export_ticks` at 0,
+`input_number.ems_charge_allowance` at your `EMS max charge power`,
+`sensor.ems_grid_power` a few watts **positive**, and `input_datetime.ems_last_apply` never
+older than 3 minutes.
+
+If `EMS charge allowance` sits permanently below `EMS max charge power`, the battery is the
+bottleneck (BMS current limit, temperature, CV phase) — that is a battery/BMS matter, not an
+EMS one. If `EMS export ticks` keeps climbing, the accepted charge power is being cut further
+every `EMS export grace`; raise `EMS export tolerance` (meter noise) or `EMS export grace`
+(give the Victron more time) if the underlying cause is a ramp rather than the battery.
 
 Two modes are normal and not a fault: `NIGHT` (sun down — the inverters are asleep) and
 `STARTING` (up to `input_number.ems_start_grace`, default 120 s, after every Home Assistant

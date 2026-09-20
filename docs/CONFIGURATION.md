@@ -8,7 +8,7 @@ Everything the package creates, what it means and how to tune it.
 
 | Mode | Entered when | Target written |
 |---|---|---|
-| `FULL` | SoC and battery power are fresh and plausible, at least one grid meter is alive, solar is readable, at least one inverter is reachable | `load + charge_limit + bias`, clamped to the reachable capacity |
+| `FULL` | SoC and battery power are fresh and plausible, at least one grid meter is alive, solar is readable, at least one inverter is reachable | `house load + allowed charge power + bias`, clamped to the reachable capacity. The allowed charge power is `EMS max charge power` capped by the learned `EMS charge allowance`; the measured export is not part of the formula |
 | `STARTING` | less than `EMS start grace` (default 120 s) since the Home Assistant start event | nothing — waiting for the first sensor values and for the ESS to boot |
 | `NIGHT` | `sun.sun` is `below_horizon` **and** PV is below 200 W | nothing — solar-powered inverters sleep, this is a normal standby state |
 | `DTU_BLIND` | **no** inverter limit entity is readable (OpenDTU powered off, MQTT broker down, entity ids changed) | nothing — the loop stops writing and the watchdog raises *no inverter reachable* |
@@ -44,9 +44,13 @@ meters disagree.
 | `ems_manual_pct` | -1 | % | `-1` = automatic. `0…100` writes this percentage to all inverters, ignoring every sensor. `0` therefore switches the inverters off. |
 | `ems_grid_bias` | 20 | W | The grid target. The loop aims at a small *import* so that it never sits exactly on the export boundary. Raise if your meter is noisy. |
 | `ems_hysteresis_pct` | 2 | % | Minimum change before a write happens. Raise to reduce writes, lower to react to smaller deviations. |
-| `ems_max_charge_power` | 2500 | W | Maximum charge power used in the calculation. Derive it as `min(DVCC max A, BMS CCL) × battery voltage`. |
-| `ems_soc_taper_from` | 90 | % | Above this SoC the allowed charge power is tapered linearly down to `ems_soc_full`. |
-| `ems_soc_full` | 99 | % | At this SoC the charge term becomes 0, i.e. only the house load is covered. |
+| `ems_max_charge_power` | 2500 | W | The charge power the array may feed the battery with. Derive it as `min(DVCC max A, BMS CCL) × battery voltage`. The learned `EMS charge allowance` can only go below it. |
+| `ems_soc_stop` | 100 | % | At/above this SoC the EMS stops *asking* for charge power and only covers the house load. It counts only while the battery is measurably not charging, so a wrong or stuck SoC cannot cut the array. `100` = never stop. |
+| `ems_charge_allowance` | 2500 | W | **Learned, written by the loop.** The charge power the battery has been observed to accept. Cut when a lasting export shows that the battery cannot use the offer, reset to `EMS max charge power` whenever the battery discharges, probed upwards again after `EMS charge re-probe`. Set it by hand to cap the charge power manually. |
+| `ems_export_tolerance` | 150 | W | An export up to this is ignored (meter noise, Victron ramp, probe step). Do not set it to 0. |
+| `ems_export_grace` | 60 | s | How long an export above the tolerance may last before the battery is assumed not to take the offered power. Raise it if your Victron needs longer to ramp. |
+| `ems_export_ticks` | 0 | – | Internal counter of 15 s ticks with an export above the tolerance. 0 = quiet, ≥ the grace in ticks = the allowance is being cut. |
+| `ems_reprobe_seconds` | 900 | s | After this long without an export the allowance is probed upwards (×1.5), so a battery that frees up is charged at full power again. `3600` = quieter grid, slower recovery. |
 | `ems_failsafe_pct` | 0 | % | Written in `GRID_BLIND` and by the watchdog. `0` stops the inverters (export impossible); raise to 2 % only if your inverters oscillate at 0 %. |
 | `ems_meter_tolerance` | 100 | W | Allowed difference between the two grid meters before the smaller (more export) value wins. |
 | `ems_settle_seconds` | 12 | s | Wait time after every write, so the loop does not chase the ESS ramp. Must be **< 15 s** (the heartbeat). |
@@ -72,7 +76,7 @@ meters disagree.
 | `sensor.ems_inverter_capacity` | reachable inverter capacity in W | `active` = number of inverters counted, `current_pct` = value currently set on them |
 | `sensor.ems_pv_delivery` | produced / commanded output in % | `expected_w`, `actual_w` |
 | `sensor.ems_house_load` | house consumption in W (`solar + grid - battery`) | – |
-| `sensor.ems_limit_target` | percentage to write | `mode`, `grid`, `solar`, `active`, `capacity` |
+| `sensor.ems_limit_target` | percentage to write | `mode`, `grid`, `solar`, `active`, `capacity`, `allowance` (W offered to the battery), `charge_push` (W asked from the array for charging) |
 | `binary_sensor.ems_degraded` | `on` when degraded | – |
 
 ---
@@ -96,12 +100,39 @@ Both meters are read every cycle.
 
 ## Deliberate design decisions
 
-### No charge push while exporting
+### Battery first: the target never contains the measured export
 
-If `grid < -30 W`, the charge term is dropped. Raising the PV limit cannot make a Victron
-charge faster — the charger decides the charge current. Pushing PV while exporting only
-exports more, and it becomes a runaway when the battery cannot absorb at all (BMS current
-limit, absorption taper, fault).
+The target is feed forward:
+
+```
+target_PV = solar + grid + (allowed charge power − battery power) + bias
+```
+
+Since `solar + grid` is the house load plus what the battery currently takes, this is
+`house load + allowed charge power + bias`. There is no feedback of the measured export, and
+that is deliberate: in 1.4.x the charge term was dropped whenever the grid exported, so
+every export — the Victron ramp, a load switching off, a lagging meter — cut the array to
+`house load + the charge power it was already taking`, which meant the charge power could
+never grow. That is the "the sun is cut although the battery could take it" failure.
+
+### The charge allowance is learned, not configured
+
+How much charge power the battery really accepts is a property of the battery, not of the
+array: BMS current limit, cell temperature, the CV phase, and the ESS ramp all change it.
+The loop therefore observes it:
+
+| Situation | Reaction |
+|---|---|
+| export above `EMS export tolerance` for more than `EMS export grace`, battery takes measurably less than offered | `EMS charge allowance` → what the battery is taking (at most a 50 % cut per step) |
+| battery discharges | `EMS charge allowance` → `EMS max charge power` (a new charge cycle starts) |
+| no export for `EMS charge re-probe` | `EMS charge allowance` ×1.5, capped at `EMS max charge power` |
+| manual override active | nothing (the override also freezes the learning) |
+
+The price is explicit: every upward probe offers slightly more than the battery takes, so a
+refused probe exports up to the probe step for up to `EMS export grace` seconds. With the
+defaults that is a few Wh per 15 minutes while the battery is in its current-limited phase —
+the trade for never starving the battery. Raise `EMS charge re-probe` if you prefer a
+quieter grid.
 
 ### Signed battery power
 
@@ -117,10 +148,11 @@ variant can take up to ~4 minutes to appear in OpenDTU, which would break the lo
 
 ### Rate limiting for the ESS ramp
 
-An instant PV increase is exported while the ESS has not started charging yet. Hence:
+An instant PV increase can be exported while the ESS has not started charging yet. Hence:
 `EMS max step` caps increases, `EMS settle time` spaces writes out, and only a real export
 (> 500 W) bypasses the settle time. Decreases are never limited, because less PV can never
-cause an export.
+cause an export. A *transient* export while the battery is ramping does not curtail the
+array any more — it is absorbed by `EMS export tolerance` and `EMS export grace`.
 
 ### 180 s re-assert
 

@@ -144,21 +144,29 @@ tion and the delivery check work.
 
 ## 4. Set the helpers
 
-All twelve helpers are created by the package (Settings → Devices & services → Helpers).
+All 21 helpers are created by the package (Settings → Devices & services → Helpers).
 Start with the defaults and change them in the order given in
-[Tuning](#6-tuning-order).
+[Tuning](#8-tuning-order).
 
 | Helper | Default | Set it to |
 |---|---|---|
 | `input_number.ems_max_charge_power` | 2500 W | your real charge power: `min(DVCC A, BMS CCL) × battery voltage` |
-| `input_number.ems_max_charge_power` taper | 90 → 99 % | adapt to your BMS/CVL |
+| `input_number.ems_soc_stop` | 100 % | leave at 100 unless you deliberately want to stop charging earlier |
 | `input_number.ems_grid_bias` | 20 W | keep small; raise if the meter is noisy |
 | `input_number.ems_settle_seconds` | 12 s | how long your ESS needs to react (see tuning) |
 | `input_number.ems_max_step_pct` | 10 % | higher = faster charging, bigger export transients |
 | `input_number.ems_hysteresis_pct` | 2 % | raise to reduce writes |
+| `input_number.ems_export_tolerance` | 150 W | export that is ignored (meter noise); do not set it to 0 |
+| `input_number.ems_export_grace` | 60 s | how long an export may last before the charge offer is reduced |
+| `input_number.ems_reprobe_seconds` | 900 s | how often the charge offer is probed upwards again |
 | `input_number.ems_failsafe_pct` | 0 % | `0` stops the inverters (no export possible) |
 | `input_number.ems_meter_tolerance` | 100 W | allowed difference between the two meters |
 | `input_number.ems_manual_pct` | -1 | `-1` = off, otherwise a fixed percentage |
+
+The remaining helpers are internal (`ems_charge_allowance`, `ems_export_ticks`,
+`ems_delivery_short`), are timestamps (`ems_last_apply`, `ems_started_at`) or are the
+switches/tests — leave them alone until
+[CONFIGURATION.md](CONFIGURATION.md#numbers) tells you otherwise.
 
 ---
 
@@ -173,7 +181,7 @@ Copy the ready-made card from
 
 ## 6. Verify the first runs
 
-1. **Trace**: Settings → Automations → *OpenDTU EMS - control loop* → ⋮ → Traces. Each run
+1. **Trace**: Settings → Automations → *OpenDTU EMS loop* → ⋮ → Traces. Each run
    shows which trigger fired, whether the condition passed and the written value.
 2. **Verbose log**: turn on `input_boolean.ems_verbose` and add
 
@@ -186,11 +194,17 @@ Copy the ready-made card from
    to `configuration.yaml`. Every write then logs a line such as:
 
    ```
-   FULL | grid -234W [shelly] | solar 3000W | SoC 85% | bat 1200W | inv 3/3 cap 4700W | limit 59.3%
+   FULL | grid -234W [shelly] | solar 3000W | SoC 85% | bat 1200W | inv 3/3 cap 4700W | limit 86.9%
    ```
 
+   With the battery-first law this line reads `house load (1566 W) + charge offer (2500 W)`,
+   i.e. the array is allowed 4086 W; the log also writes a `CHARGE ALLOWANCE:` line whenever
+the offer is reduced.
+
 3. **Expected steady state**: `sensor.ems_grid_power` hovers around `+20 W`, the limit moves
-   only when the load or the SoC changes, and `sensor.ems_pv_delivery` stays near 100 %.
+   only when the load or the SoC changes, `sensor.ems_pv_delivery` stays near 100 % and
+   `input_number.ems_charge_allowance` stays at your `EMS max charge power` while the battery
+   accepts the full offer.
 
 ---
 
@@ -218,8 +232,19 @@ Do all five, in this order, while watching the grid power:
    `input_datetime.ems_last_apply` history).
 4. **`EMS grid bias`** — raise only if your meter is noisy or you are billed for tiny
    imports.
-5. **SoC taper (`taper from`, `full`)** — must match your BMS/CVL behaviour, otherwise the
-   loop either stops pushing too early or tries to charge a full battery.
+5. **Export knobs (`EMS export tolerance`, `EMS export grace`, `EMS charge re-probe`)** —
+   these decide how much patience the array gives the battery and the Victron. Symptoms and
+their direction:
+   * short exports repeated at every limit increase → raise `EMS export grace` (give the ESS
+     more time) or lower `EMS max step`
+   * a standing export while the battery is only partly charged → the loop will cut
+     `EMS charge allowance` after the grace. If that happens while the battery really could
+     take more, the tolerance is too small for your meter noise: raise it to 200 W
+   * `EMS charge allowance` recovers too slowly after the battery freed up → lower
+     `EMS charge re-probe` (e.g. 300 s)
+6. **`EMS SoC stop charging`** — leave at 100 %. Lower it only if you deliberately want to
+   stop charging before the pack is full (then the array covers the house load only from that
+   SoC on).
 
 ---
 

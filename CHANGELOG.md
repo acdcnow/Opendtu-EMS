@@ -5,6 +5,61 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-09-20
+
+### Fixed — the battery was not charged at full power
+
+The target used to be cut whenever the grid exported ("drop the charge term while
+exporting"). Any export - the Victron ramp, a load switching off, the ~1 s lag between the
+PV and the grid measurement - therefore reduced the array to `house load + the charge power it
+was already taking`. The charge power could never grow, and with a slow Victron ramp the loop
+kept cutting the very surplus the battery was about to absorb. The SoC taper made it worse at
+the top of the charge: from 90 % SoC it reduced the offer linearly and at 99 % it cut it to
+zero, so with a Seplos that reports 99 % during the CV phase the array dropped to the house
+load and the battery was never finished.
+
+Both are gone. The target is now purely feed forward — `house load + allowed charge power +
+bias`, i.e. `solar + grid + (allowance − battery power) + bias` — and **the measured export
+never appears in it**. The array is only reduced when the battery really cannot use the power,
+and that is measured, not assumed.
+
+### Added
+
+* **Charge acceptance learning** (`input_number.ems_charge_allowance`): if the grid exports
+  more than `EMS export tolerance` for longer than `EMS export grace` while the battery takes
+  measurably less than it is offered, the offer is cut to what the battery is really taking (at
+  most by half per step). It is reset to `EMS max charge power` on every discharge and probed
+  upwards again (×1.5) after `EMS charge re-probe` without an export, so a battery that frees
+  up is charged at full power again by itself. New helpers: `ems_charge_allowance`,
+  `ems_export_tolerance`, `ems_export_grace`, `ems_export_ticks`, `ems_reprobe_seconds`.
+* `input_number.ems_soc_stop` (**default 100 %**): the only remaining SoC influence. It stops
+  the charge offer at that SoC **and only while the battery is measurably idle**, so a wrong or
+  stuck SoC can no longer cut the array.
+* New attributes on `sensor.ems_limit_target`: `allowance` (W the battery may take) and
+  `charge_push` (W of the target meant for charging).
+* The control loop now also runs at night — no writes, but that is when the battery
+  discharges and the charge estimate is reset.
+* Watchdog: the stale check also requires the mode to have been stable for the timeout, so the
+  first run after the NIGHT → FULL transition cannot produce a spurious fail-safe alarm.
+* Dashboard: a charge-offer chip plus the learning entities in the controls, diagnostics and
+  source-sensor cards.
+
+### Removed
+
+* `input_number.ems_soc_taper_from` and `input_number.ems_soc_full` (replaced by `ems_soc_stop`
+  plus the learning). **Delete them in Settings → Helpers after updating**, they are no longer
+  used — a leftover `soc_taper_from = 90` would not just be dead, it would suggest a behaviour
+  that no longer exists.
+
+### Tests / CI
+
+* 30 control scenarios (6 new: battery-first while exporting, battery at its allowance,
+  allowance-capped offer, discharging battery, SoC stop idle vs. charging).
+* 31 new learning checks: grace ticks, tick counting/capping, trim criteria and step size,
+  discharge reset, upward probe conditions and the night standby stop.
+* The suite now resolves the whole sensor chain for the learning cases and passes automation
+  variables into the render context like Home Assistant does.
+
 ## [1.4.0] - 2026-09-20
 
 ### Added

@@ -15,7 +15,9 @@ Work through the symptom table first, then the detail sections.
 | Limit stays at `0 %` | mode, `input_number.ems_failsafe_pct` | `GRID_BLIND` fail-safe, or `ems_manual_pct = 0` |
 | Limit never changes | trace of the loop, `input_datetime.ems_last_apply` | condition blocked (settle/hysteresis) or the loop errors |
 | Exports after load steps | `history` of `sensor.ems_grid_power` | `EMS max step` too high / `EMS settle time` too short |
-| Charging is slow | DVCC, BMS CCL, `EMS max charge power`, taper helpers | charge current limited by the Victron side, or the taper starts too early |
+| **PV is cut although the battery could take it** | `input_number.ems_charge_allowance`, attributes `allowance`/`charge_push` of `sensor.ems_limit_target`, `input_number.ems_export_ticks` | the loop measured that the battery is not taking the offer — see [below](#pv-is-cut-although-the-battery-could-take-it) |
+| Battery stops charging near the top | `EMS SoC stop charging`, `input_number.ems_charge_allowance`, BMS CCL | the SoC stop is at 100 % by default; if `charge allowance` is at the limit, the BMS is the bottleneck (CV phase) |
+| Charging is slow | DVCC, BMS CCL, `EMS max charge power`, `ems_charge_allowance` | charge current limited by the Victron side, or the learned allowance is below the maximum |
 | Redistribution does not happen | `active` attribute | the offline inverter's limit entity stays available → add power sensors |
 | *PV capacity short* notification | OpenDTU inverter page | an inverter is offline / its limit entity disappeared |
 | *PV under-delivering* notification | `sensor.ems_pv_delivery` attributes | inverter not delivering **or** heavy clouds/shading |
@@ -94,7 +96,7 @@ OpenDTU — the package is not loaded. Check, in this order:
    configuration*. After the restart look at Settings → Logs for `Invalid config` and for
    `Package packages/... setup failed` — a single YAML or Jinja error rejects the whole file.
 6. **Verify what should exist**: Search `ems_` in Developer tools → States (7 entities),
-   Settings → Automations (3), Settings → Helpers (17, search "EMS").
+   Settings → Automations (3), Settings → Helpers (21, search "EMS").
 
    Note that a YAML automation's entity id is the slug of its **alias**, not its `id:`
    (`OpenDTU EMS loop` → `automation.opendtu_ems_loop`), and that the registry keeps an entity id
@@ -134,7 +136,7 @@ by itself as soon as one inverter entity is readable again. A persistent notific
 
 Check in this order:
 
-1. **Trace** — Settings → Automations → *OpenDTU EMS - control loop* → ⋮ → Traces. The last
+1. **Trace** — Settings → Automations → *OpenDTU EMS loop* → ⋮ → Traces. The last
    trace shows the trigger, the condition result and the executed steps.
 2. **Condition** — the second condition blocks writes when
    `current_pct` and `sensor.ems_limit_target` differ by less than `EMS hysteresis`, the last
@@ -161,6 +163,36 @@ Check in this order:
 5. Check the ESS grid setpoint in the Victron GX: if it is configured to export, the loop
    fights your own ESS.
 
+## PV is cut although the battery could take it
+
+This was a real bug up to 1.4.x and is fixed in 1.5.0. Understand the numbers first, then
+check the ones on your system:
+
+```
+limit target = house load + allowed charge power + bias
+allowed charge power = min(EMS max charge power, EMS charge allowance)
+```
+
+1. **Read the attributes.** `sensor.ems_limit_target` → `allowance` (how much charge power the
+   battery is offered right now) and `charge_push` (how much of the target is meant for
+   charging). `charge_push = 0` means the target only covers the house load — and that is
+   only allowed to happen when (a) `EMS SoC stop charging` is reached *and* the battery is
+   measurably not charging, or (b) the mode is not `FULL`.
+2. **Check the learned allowance.** `input_number.ems_charge_allowance` below `EMS max charge
+   power` means the loop saw an export that the battery did not absorb for at least
+   `EMS export grace`. That is measurement, not a guess:
+   * if the Victron was simply slow, raise `EMS export grace` (e.g. 180 s)
+   * if your meter is noisy or has an offset, raise `EMS export tolerance` (e.g. 200 W)
+   * if the battery really is limited (BMS CCL, cold pack, CV phase), the value is correct —
+     check DVCC and the CCL, and watch `bat` in the verbose log
+3. **Check `EMS export ticks`.** It counts the 15 s ticks of the current export run. Values at
+   or above the grace mean the allowance is being reduced further.
+4. **Check the SoC.** With `EMS SoC stop charging = 100` the stop can only bite at 100 %, and
+   even then only while the battery takes less than `EMS export tolerance`. A stuck SoC is
+   therefore harmless. Lower the helper only on purpose.
+5. **Reset the estimate by hand.** Set `input_number.ems_charge_allowance` back to
+   `EMS max charge power` and watch: it is reset automatically on the next discharge anyway.
+
 ## Charging is slower than expected
 
 The loop cannot change how fast the battery charges; it only decides how much PV is allowed.
@@ -170,9 +202,15 @@ Check:
 * The BMS charge current limit (CCL) is not the bottleneck — the BMS reduces it in cold
   weather or near full.
 * `EMS max charge power` matches `min(DVCC, CCL) × voltage`.
-* The SoC taper (`taper from` 90 %, `full` 99 %) is not stopping the push too early. Watch
-  `bat` in the verbose log against `EMS max charge power`.
+* `input_number.ems_charge_allowance` is at `EMS max charge power`. If it sits lower, the loop
+  measured that the battery does not take the offer — watch `bat` in the verbose log while the
+  grid exports, and compare it with the allowance. The estimate recovers by itself (×1.5 every
+  `EMS charge re-probe` without an export) and is reset on every discharge.
 * `sensor.ems_mode` is `FULL` (not `NO_BATTERY`) while the battery charges.
+
+Remember that the loop only decides how much PV is *allowed*; it cannot make the Victron
+charge faster. A battery that takes 800 W while 2500 W are offered is a battery/BMS matter, and
+the loop will work at those 800 W instead of exporting the difference.
 
 ## Redistribution does not kick in
 
@@ -201,7 +239,12 @@ update in place instead of piling up. They disappear when you dismiss them.
 
 ## Debugging aids
 
-* `input_boolean.ems_verbose` + `logger: logs: opendtu.zero_export: debug` → one line per run.
+* `input_boolean.ems_verbose` + `logger: logs: opendtu.zero_export: debug` → one line per run,
+  plus a `CHARGE ALLOWANCE:` warning line whenever the offer is reduced.
+* `input_number.ems_charge_allowance` / `ems_export_ticks` → "how much can the battery take"
+  and "is the array exporting right now".
+* attributes `allowance` and `charge_push` of `sensor.ems_limit_target` → the same two numbers
+  next to the target percentage.
 * `input_boolean.ems_simulate_battery_loss` → tests the `NO_BATTERY` path.
 * `input_number.ems_manual_pct` → writes a fixed percentage, ignoring all sensors
   (`-1` restores automatic operation).

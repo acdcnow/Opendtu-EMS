@@ -18,6 +18,7 @@ package, update the constants below in the same way.
 """
 from __future__ import annotations
 
+import ast
 import datetime as dt
 import re
 import sys
@@ -47,23 +48,57 @@ class StateObj:
     def __init__(self, value: str, age_s: int = 5) -> None:
         self.state = value
         self.last_updated = REF - dt.timedelta(seconds=age_s)
+        self.last_changed = self.last_updated
         self.attributes: dict = {}
 
     def __str__(self) -> str:  # pragma: no cover - convenience only
         return str(self.state)
 
 
-def make_env(data: dict):
+class _Domain:
+    """states.input_number.x -> StateObj (attribute and item access)."""
+
+    def __init__(self, data: dict, domain: str) -> None:
+        self._data = data
+        self._domain = domain
+
+    def _obj(self, item: str) -> StateObj:
+        entity_id = f"{self._domain}.{item}"
+        return StateObj(self._data.get(entity_id, "unknown"),
+                        self._data.get(f"__age:{entity_id}", 5))
+
+    def __getattr__(self, item: str) -> StateObj:
+        if item.startswith("_"):
+            raise AttributeError(item)
+        return self._obj(item)
+
+    def __getitem__(self, item: str) -> StateObj:
+        return self._obj(item)
+
+
+class States:
+    """states('x') and states.domain.object_id.last_changed, like Home Assistant."""
+
+    def __init__(self, data: dict) -> None:
+        self._data = data
+
+    def __call__(self, entity_id: str):
+        return self._data.get(entity_id, "unknown")
+
+    def __getitem__(self, entity_id: str) -> StateObj:
+        return StateObj(self._data.get(entity_id, "unknown"),
+                        self._data.get(f"__age:{entity_id}", 5))
+
+    def __getattr__(self, name: str) -> _Domain:
+        # jinja2 probes these two to decide whether an object is callable
+        if name.startswith("_") or name in ("unsafe_callable", "alters_data"):
+            raise AttributeError(name)
+        return _Domain(self._data, name)
+
+
+def make_env(data: dict, extra: dict | None = None):
     """Build a sandboxed Jinja environment with the Home Assistant functions."""
     env = ImmutableSandboxedEnvironment()
-
-    class States:
-        def __call__(self, entity_id):
-            return data.get(entity_id, "unknown")
-
-        def __getitem__(self, entity_id):
-            return StateObj(data.get(entity_id, "unknown"),
-                            data.get(f"__age:{entity_id}", 5))
 
     def has_value(entity_id):
         return str(data.get(entity_id, "unknown")).lower() not in MISSING
@@ -90,7 +125,7 @@ def make_env(data: dict):
                 for i in ids]
 
     env.globals.update(
-        states=States(),
+        states=States(data),
         has_value=has_value,
         is_state=lambda e, c: str(data.get(e, "unknown")) == c,
         state_attr=state_attr,
@@ -100,6 +135,8 @@ def make_env(data: dict):
         last_ts=data.get("__last_apply", REF.timestamp() - 60),
         timeout=300,
     )
+    if extra:
+        env.globals.update(extra)
     env.filters["timestamp_local"] = lambda ts: dt.datetime.fromtimestamp(
         float(ts), dt.timezone.utc).strftime("%H:%M:%S")
     env.tests["has_value"] = lambda v: str(getattr(v, "state", v)).lower() not in MISSING
@@ -130,27 +167,65 @@ BASE = {
     "input_number.ems_grid_bias": "20",
     "input_number.ems_hysteresis_pct": "2",
     "input_number.ems_max_charge_power": "2500",
-    "input_number.ems_soc_taper_from": "90",
-    "input_number.ems_soc_full": "99",
+    "input_number.ems_soc_stop": "100",
+    "input_number.ems_charge_allowance": "2500",
+    "input_number.ems_export_tolerance": "150",
+    "input_number.ems_export_grace": "60",
+    "input_number.ems_export_ticks": "0",
+    "input_number.ems_reprobe_seconds": "900",
     "input_number.ems_failsafe_pct": "0",
     "input_number.ems_meter_tolerance": "100",
     "input_number.ems_delivery_short": "0",
     "input_number.ems_settle_seconds": "0",   # logic tests act immediately
     "input_number.ems_max_step_pct": "100",   # slew disabled in logic tests
-    I1: "86.9", I2: "86.9", I3: "86.9",
+    I1: "50.0", I2: "50.0", I3: "50.0",      # inverters start at 50 %
 }
 
 # name: (data, mode, meter source, grid, capacity, active, target %, write?)
+# target % is "house load + allowed charge power + bias" scaled to the reachable
+# capacity - the battery-first law: solar + grid + (allowance - battery) + bias.
 CONTROL_CASES = {
-    "normal": (dict(BASE), "FULL", "shelly", -234, 4700, 3, 59.3, True),
+    "normal": (dict(BASE), "FULL", "shelly", -234, 4700, 3, 86.9, True),
+    # the array exports, but the battery still has 1300 W of headroom: the
+    # offer must NOT be cut (that was the 1.4.x bug)
+    "battery-first, exporting 1200 W": ({**BASE, S: "-1200", V: "-1200",
+                                         "sensor.solarleistung_gesamt": "4500"},
+                                        "FULL", "shelly", -1200, 4700, 3, 98.3, True),
+    # battery at its allowance: the surplus is curtailed (load + charge + bias)
+    "battery at allowance, curtailing": ({**BASE, S: "-1600", V: "-1600",
+                                          "sensor.solarleistung_gesamt": "4600",
+                                          "sensor.serialbattery_seplos_leistung": "2500"},
+                                         "FULL", "shelly", -1600, 4700, 3, 64.3, True),
+    # the learned acceptance caps the offer
+    "charge allowance 800 W": ({**BASE, S: "-400", V: "-400",
+                                "sensor.solarleistung_gesamt": "1000",
+                                "sensor.serialbattery_seplos_leistung": "0",
+                                "input_number.ems_charge_allowance": "800"},
+                               "FULL", "shelly", -400, 4700, 3, 30.2, True),
+    # discharging: the offer also covers what the battery is giving up
+    "battery discharging 800 W": ({**BASE, S: "300", V: "300",
+                                   "sensor.solarleistung_gesamt": "500",
+                                   "sensor.serialbattery_seplos_leistung": "-800"},
+                                  "FULL", "shelly", 300, 4700, 3, 87.7, True),
+    # SoC stop: only honoured while the battery is measurably idle
+    "SoC stop, battery idle": ({**BASE, S: "-1000", V: "-1000",
+                                "sensor.solarleistung_gesamt": "3500",
+                                "sensor.serialbattery_seplos_leistung": "0",
+                                "sensor.serialbattery_seplos_ladestand": "100"},
+                               "FULL", "shelly", -1000, 4700, 3, 53.6, True),
+    "SoC stop ignored while charging": ({**BASE, S: "-1000", V: "-1000",
+                                         "sensor.solarleistung_gesamt": "3500",
+                                         "sensor.serialbattery_seplos_leistung": "800",
+                                         "sensor.serialbattery_seplos_ladestand": "100"},
+                                        "FULL", "shelly", -1000, 4700, 3, 89.8, True),
     "primary meter DEAD": ({**BASE, S: "unavailable"},
-                           "FULL", "victron", -240, 4700, 3, 59.1, True),
+                           "FULL", "victron", -240, 4700, 3, 86.8, True),
     "primary meter FROZEN": ({**BASE, f"__age:{S}": 600},
-                             "FULL", "victron", -240, 4700, 3, 59.1, True),
+                             "FULL", "victron", -240, 4700, 3, 86.8, True),
     "backup importing 500 W": ({**BASE, S: "unavailable", V: "500"},
                                "FULL", "victron", 500, 4700, 3, 100.0, True),
     "meters disagree (export)": ({**BASE, V: "500"},
-                                 "FULL", "disagree", -234, 4700, 3, 59.3, True),
+                                 "FULL", "disagree", -234, 4700, 3, 86.9, True),
     "meters disagree (import)": ({**BASE, S: "100", V: "900"},
                                  "FULL", "disagree", 100, 4700, 3, 94.0, True),
     "both meters DEAD": ({**BASE, S: "unavailable", V: "unavailable"},
@@ -168,51 +243,51 @@ CONTROL_CASES = {
                                "FULL", "shelly", 0, 3100, 2, 100.0, True),
     "2 of 3 active (import 300)": ({**BASE, I3: "unavailable", S: "300", V: "300"},
                                    "FULL", "shelly", 300, 3100, 2, 100.0, True),
-    # OpenDTU off / unreachable
+    # OpenDTU off / unreachable: nothing can be written at all
     "DTU off (no inverter readable)": ({**BASE, I1: "unavailable", I2: "unavailable",
                                          I3: "unavailable"},
-                                        "DTU_BLIND", "shelly", -234, 0, 0, 0.0, True),
+                                        "DTU_BLIND", "shelly", -234, 0, 0, 0.0, False),
     "DTU off + solar dead": ({**BASE, I1: "unavailable", I2: "unavailable",
                                I3: "unavailable",
                                "sensor.solarleistung_gesamt": "unavailable"},
-                              "DTU_BLIND", "shelly", -234, 0, 0, 0.0, True),
+                              "DTU_BLIND", "shelly", -234, 0, 0, 0.0, False),
     "solar dead, inverters ok": ({**BASE, "sensor.solarleistung_gesamt": "unavailable"},
                                   "GRID_BLIND", "shelly", -234, 4700, 3, 0.0, True),
-    # night and startup: standby, inverters asleep, nothing to control
+    # night and startup: standby, inverters asleep, nothing to write
     "night (inverters asleep)": ({**BASE, "sun.sun": "below_horizon",
                                  "sensor.solarleistung_gesamt": "0",
                                  I1: "unavailable", I2: "unavailable",
                                  I3: "unavailable"},
-                                "NIGHT", "shelly", -234, 0, 0, 0.0, True),
+                                "NIGHT", "shelly", -234, 0, 0, 0.0, False),
     "night (inverters reachable)": ({**BASE, "sun.sun": "below_horizon",
                                      "sensor.solarleistung_gesamt": "0"},
-                                    "NIGHT", "shelly", -234, 4700, 3, 0.0, True),
+                                    "NIGHT", "shelly", -234, 4700, 3, 0.0, False),
     "start grace active": ({**BASE,
                             "__attr:input_datetime.ems_started_at:timestamp":
                                 REF.timestamp() - 30},
-                           "STARTING", "shelly", -234, 4700, 3, 59.3, True),
+                           "STARTING", "shelly", -234, 4700, 3, 59.3, False),
     "start grace elapsed": ({**BASE,
                              "__attr:input_datetime.ems_started_at:timestamp":
                                  REF.timestamp() - 600},
-                            "FULL", "shelly", -234, 4700, 3, 59.3, True),
+                            "FULL", "shelly", -234, 4700, 3, 86.9, True),
     # Victron ramp: slew limit and settle time
     "slew: rise is limited": ({**BASE, "input_number.ems_max_step_pct": "10",
-                               S: "500", V: "500"},
+                               I1: "86.9", I2: "86.9", I3: "86.9", S: "500", V: "500"},
                               "FULL", "shelly", 500, 4700, 3, 96.9, True),
     "slew: cut is immediate": ({**BASE, "input_number.ems_max_step_pct": "10",
                                 I1: "100", I2: "100", I3: "100", S: "-900", V: "-900"},
-                               "FULL", "shelly", -900, 4700, 3, 45.1, True),
+                               "FULL", "shelly", -900, 4700, 3, 72.8, True),
     "settle: too soon (no write)": ({**BASE, "input_number.ems_settle_seconds": "12",
                                      "__last_apply": REF.timestamp() - 3},
-                                    "FULL", "shelly", -234, 4700, 3, 59.3, False),
+                                    "FULL", "shelly", -234, 4700, 3, 86.9, False),
     "settle: export bypasses": ({**BASE, "input_number.ems_settle_seconds": "12",
                                  "__last_apply": REF.timestamp() - 3, S: "-900", V: "-900"},
-                                "FULL", "shelly", -900, 4700, 3, 45.1, True),
+                                "FULL", "shelly", -900, 4700, 3, 72.8, True),
 }
 
 # name: (data, delivery %, under-delivery notification, expected output W)
 DELIVERY_CASES = {
-    "delivery ok": (dict(BASE), 108, False, 2787),
+    "delivery ok": (dict(BASE), 73, False, 4084),
     "one inverter dead": ({**BASE, S: "500", V: "500",
                            "sensor.solarleistung_gesamt": "800"}, 31, True, 2618),
     "cloudy, big gap": ({**BASE, S: "500", V: "500",
@@ -369,8 +444,65 @@ def main(argv: list[str]) -> int:
     grid, delivery = sensors["ems_grid_power"], sensors["ems_pv_delivery"]
     loop = automations["opendtu_ems_loop"]
     watch = automations["opendtu_ems_watchdog"]
-    write_cond = next(c["value_template"] for c in loop["conditions"]
-                      if "ems_settle_seconds" in str(c.get("value_template", "")))
+
+    def loop_templates(predicate, node=None):
+        """Every template in the loop's actions that matches the predicate."""
+        found = []
+
+        def walk(item):
+            if isinstance(item, dict):
+                for value in item.values():
+                    if isinstance(value, str) and ("{{" in value or "{%" in value):
+                        if predicate(value):
+                            found.append(value)
+                    else:
+                        walk(value)
+            elif isinstance(item, list):
+                for value in item:
+                    walk(value)
+
+        walk(loop["actions"] if node is None else node)
+        return found
+
+    def loop_actions(kind):
+        """All actions of a given service in the loop's actions."""
+        found = []
+
+        def walk(item):
+            if isinstance(item, dict):
+                if item.get("action") == kind:
+                    found.append(item)
+                for value in item.values():
+                    walk(value)
+            elif isinstance(item, list):
+                for value in item:
+                    walk(value)
+
+        walk(loop["actions"])
+        return found
+
+    # 1.5.0 moved the write gate out of the conditions into the actions (the
+    # learning has to run even when nothing is written), and added a night stop
+    write_cond = loop_templates(lambda t: "ems_settle_seconds" in t)[0]
+    night_cond = loop_templates(lambda t: "== 'NIGHT'" in t)[0]
+    lrn_vars = next(action["variables"] for action in loop["actions"]
+                    if isinstance(action, dict) and "variables" in action
+                    and "lrn_ok" in action["variables"])
+    lrn_tick = loop_templates(lambda t: "lrn_exporting" in t and "lrn_ok" in t)[0]
+    lrn_trim = loop_templates(lambda t: "lrn_needed" in t)[0]
+    lrn_new_tpl = loop_templates(lambda t: "lrn_allow / 2" in t)[0]
+    lrn_reset = loop_templates(lambda t: "lrn_bat < -1 * lrn_tol" in t)[0]
+    lrn_probe = loop_templates(lambda t: "lrn_quiet" in t)[0]
+
+    def set_value(substring):
+        return next(str(action["data"]["value"])
+                    for action in loop_actions("input_number.set_value")
+                    if substring in str(action["data"]["value"]))
+
+    lrn_tick_out = set_value("lrn_ticks + 1")          # tick increment
+    lrn_new_out = set_value("lrn_new")                 # trim
+    lrn_reset_out = set_value("lrn_cmax | round")       # discharge reset
+    lrn_probe_out = set_value("1.5")                   # upward probe
     dtu_cond = next(c["value_template"] for c in loop["conditions"]
                     if "DTU_BLIND" in str(c.get("value_template", "")))
     ifs = [a["if"][0]["value_template"] for a in watch["actions"]
@@ -384,7 +516,12 @@ def main(argv: list[str]) -> int:
                     and "ems_pv_delivery" in str(a["if"][0].get("value_template", "")))
 
     def render(expr, data):
-        return make_env(data).from_string(expr).render().strip()
+        # "__var:<name>" entries stand in for automation variables, which Home
+        # Assistant makes available to every template of the same script run
+        env = make_env(data)
+        env.globals.update({key[6:]: value for key, value in data.items()
+                            if key.startswith("__var:")})
+        return env.from_string(expr).render().strip()
 
     def chain(data):
         grid_ok = render(grid["availability"], data) == "True"
@@ -399,7 +536,9 @@ def main(argv: list[str]) -> int:
         mode = render(sensors["ems_mode"]["state"], d2)
         d3 = {**d2, "sensor.ems_mode": mode}
         target = render(sensors["ems_limit_target"]["state"], d3)
-        d4 = {**d3, "sensor.ems_limit_target": target}
+        # the loop snapshots the target into the automation variable target_pct
+        # before it touches the charge allowance, and uses that everywhere
+        d4 = {**d3, "sensor.ems_limit_target": target, "__var:target_pct": target}
         expected = render(delivery["attributes"]["expected_w"], d4)
         d5 = {**d4, "__attr:sensor.ems_pv_delivery:expected_w": expected}
         delivered = render(delivery["state"], d5)
@@ -408,6 +547,8 @@ def main(argv: list[str]) -> int:
                     active=active, current=current, mode=mode, target=target,
                     expected=expected, delivered=delivered,
                     write=render(write_cond, d6),
+                    night=render(night_cond, d6),
+                    mode_ok=render(dtu_cond, d6),
                     dtu_skip=render(dtu_cond, d6),
                     dtu_alert=render(dtu_tpl, d6),
                     degraded=render(bsens["ems_degraded"]["state"], d6),
@@ -428,12 +569,143 @@ def main(argv: list[str]) -> int:
             why.append(f"capacity={got['capacity']}/active={got['active']}")
         if abs(float(got["target"]) - target) > TOLERANCE:
             why.append(f"target={got['target']}")
-        if write is not None and got["write"] != str(write):
-            why.append(f"write={got['write']}")
+        if write is not None:
+            # the loop only writes when the gate AND the mode condition pass and
+            # the run has not stopped at the night standby check
+            effective = (got["write"] == "True" and got["mode_ok"] == "True"
+                         and got["night"] != "True")
+            if effective != bool(write):
+                why.append(f"write={effective}")
         if why:
             fails.append((name, why))
         print(f"  {'OK ' if not why else '!! '}{name:<30}{got['mode']:>11}"
               f"{got['target']:>7}%   {'; '.join(why)}")
+
+    print("\n== charge allowance learning (control loop) ==")
+    IMPORTING = {**BASE, S: "500", V: "500"}
+    EXPORTING = {**BASE, S: "-600", V: "-600"}
+    QUIET = {**BASE, S: "500", V: "500",
+             "__age:input_number.ems_charge_allowance": 1200}
+
+    def lrn_input(data):
+        """Resolve what the sensor chain would give the loop (grid + mode),
+        unless the case sets it explicitly."""
+        got = chain(data)
+        out = dict(data)
+        out.setdefault("sensor.ems_grid_power", got["grid"])
+        out.setdefault("sensor.ems_mode", got["mode"])
+        return out
+
+    def lrn_env(data):
+        """Render the loop's variable block, then the templates that use it."""
+        values = {}
+        for key, tpl in lrn_vars.items():
+            raw = make_env(data).from_string(tpl).render().strip()
+            try:
+                values[key] = ast.literal_eval(raw)
+            except (ValueError, SyntaxError):
+                values[key] = raw
+        return make_env(data, values), values
+
+    def learned(name, got, want):
+        try:
+            ok = abs(float(got) - float(want)) < 1e-6
+        except (TypeError, ValueError):
+            ok = str(got) == str(want)
+        if not ok:
+            fails.append((f"learning: {name}", [f"got {got!r}, want {want!r}"]))
+            print(f"  !! {name:<46}{got}   (want {want})")
+        else:
+            print(f"  OK {name:<46}{got}")
+
+    def lrn_cond(name, data, tpl, want):
+        env, _ = lrn_env(lrn_input(data))
+        learned(name, env.from_string(tpl).render().strip(), want)
+
+    def lrn_value(name, data, tpl, want):
+        env, _ = lrn_env(lrn_input(data))
+        got = env.from_string(tpl).render().strip()
+        try:
+            got = ast.literal_eval(got)
+        except (ValueError, SyntaxError):
+            pass
+        learned(name, got, want)
+
+    # "EMS export grace" seconds are counted in 15 s ticks (loop heartbeat)
+    for grace, ticks in (("0", 1), ("30", 2), ("60", 4), ("90", 6), ("600", 40)):
+        _, vals = lrn_env(lrn_input({**BASE, "input_number.ems_export_grace": grace}))
+        learned(f"grace {grace} s -> {ticks} tick(s)", vals["lrn_needed"], ticks)
+
+    lrn_value("tick up while exporting", EXPORTING, lrn_tick_out, 1)
+    lrn_value("ticks continue while exporting",
+              {**EXPORTING, "input_number.ems_export_ticks": "3"}, lrn_tick_out, 4)
+    lrn_value("ticks capped at 99", {**EXPORTING, "input_number.ems_export_ticks": "99"},
+              lrn_tick_out, 99)
+    lrn_cond("tick branch off while importing", IMPORTING, lrn_tick, "False")
+    lrn_cond("tick branch off when nothing is written",
+             {**EXPORTING, "sensor.ems_mode": "NIGHT", "input_number.ems_export_ticks": "3"},
+             lrn_tick, "False")
+    lrn_cond("tick branch off on manual override",
+             {**EXPORTING, "input_number.ems_manual_pct": "50"}, lrn_tick, "False")
+    lrn_cond("tick branch off when the battery data is gone",
+             {**EXPORTING, "sensor.serialbattery_seplos_leistung": "unknown"},
+             lrn_tick, "False")
+
+    # the trim criterion: only after the whole grace, and only while the
+    # battery takes measurably less than it is offered
+    lrn_cond("trim after the grace", {**EXPORTING, "input_number.ems_export_ticks": "3"},
+             lrn_trim, "True")
+    lrn_cond("no trim before the grace", {**EXPORTING, "input_number.ems_export_ticks": "1"},
+             lrn_trim, "False")
+    lrn_cond("no trim while the battery takes the offer",
+             {**EXPORTING, "input_number.ems_export_ticks": "9",
+              "sensor.serialbattery_seplos_leistung": "2450"}, lrn_trim, "False")
+    env, _ = lrn_env(lrn_input({**EXPORTING, "input_number.ems_export_ticks": "3",
+                                "sensor.serialbattery_seplos_leistung": "300"}))
+    learned("trim: at most half, never below what it takes",
+            ast.literal_eval(env.from_string(lrn_new_tpl).render().strip()), 1250)
+    env, _ = lrn_env(lrn_input({**EXPORTING,
+                                "sensor.serialbattery_seplos_leistung": "1500"}))
+    learned("trim: uses the measured battery power",
+            ast.literal_eval(env.from_string(lrn_new_tpl).render().strip()), 1500)
+
+    # the discharge reset: a new charge cycle gets the full offer back
+    lrn_cond("reset while discharging",
+             {**IMPORTING, "sensor.serialbattery_seplos_leistung": "-500",
+              "input_number.ems_charge_allowance": "800"}, lrn_reset, "True")
+    lrn_cond("no reset while exporting",
+             {**EXPORTING, "sensor.serialbattery_seplos_leistung": "-500",
+              "input_number.ems_charge_allowance": "800"}, lrn_reset, "False")
+    lrn_cond("no reset when already at the maximum",
+             {**IMPORTING, "sensor.serialbattery_seplos_leistung": "-500"},
+             lrn_reset, "False")
+    lrn_value("reset value = max charge power",
+              {**IMPORTING, "sensor.serialbattery_seplos_leistung": "-500",
+               "input_number.ems_charge_allowance": "800"}, lrn_reset_out, 2500)
+
+    # the upward probe: never starve a battery that freed up
+    lrn_cond("probe when quiet long enough",
+             {**QUIET, "input_number.ems_charge_allowance": "1000",
+              "sensor.serialbattery_seplos_leistung": "500"}, lrn_probe, "True")
+    lrn_cond("no probe too soon",
+             {**BASE, S: "500", V: "500",
+              "input_number.ems_charge_allowance": "1000",
+              "sensor.serialbattery_seplos_leistung": "500"}, lrn_probe, "False")
+    lrn_cond("no probe while discharging",
+             {**QUIET, "input_number.ems_charge_allowance": "1000",
+              "sensor.serialbattery_seplos_leistung": "-500"}, lrn_probe, "False")
+    lrn_cond("no probe at the maximum", dict(QUIET), lrn_probe, "False")
+    lrn_value("probe step x1.5",
+              {**QUIET, "input_number.ems_charge_allowance": "1000"}, lrn_probe_out, 1500)
+    lrn_value("probe capped at max charge power",
+              {**QUIET, "input_number.ems_charge_allowance": "2400"}, lrn_probe_out, 2500)
+
+    # standby: the loop still runs at night (that is when the estimate is
+    # reset) but writes nothing
+    lrn_cond("night stop in NIGHT", {**BASE, "sensor.ems_mode": "NIGHT"},
+             night_cond, "True")
+    lrn_cond("no night stop in FULL", {**BASE, "sensor.ems_mode": "FULL"},
+             night_cond, "False")
 
     print("\n== house load (sensor.ems_house_load) ==")
     load_tpl = sensors["ems_house_load"]["state"]
@@ -509,7 +781,9 @@ def main(argv: list[str]) -> int:
     for mode in ("STARTING", "NIGHT"):
         data = {**BASE, "sensor.ems_mode": mode,
                 "__attr:sensor.ems_grid_power:source": "shelly"}
-        writes = render(dtu_cond, data)
+        mode_ok = render(dtu_cond, data)
+        night = render(night_cond, data)
+        writes = str(mode_ok == "True" and night != "True")
         degraded = render(bsens["ems_degraded"]["state"], data)
         why = []
         if writes != "False":
