@@ -51,4 +51,5 @@ class EmsBundleSensor(SensorEntity):
             "dashboard": TARGET_DASHBOARD,
             "packages_configured": data.packages_configured,
             "restart_required": data.changed,
+            "update_available": bool(data.updates_available),
         }

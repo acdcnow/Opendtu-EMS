@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "OpenDTU Zero-Export EMS",
-        "description": "The EMS itself is a single Home Assistant **package** file. Setup installs it as `{package}` and the ready-made dashboard view as `{dashboard}`.\n\nAn existing file is only replaced when it is **older**: the old file is kept as a `.bak` copy, a file from a newer release and a locally edited file at the same version are left untouched.\n\nAfterwards **restart Home Assistant** so the entities (sensors, helpers, automations) are created.",
+        "description": "The EMS itself is a single Home Assistant **package** file. Setup installs it as `{package}` and the ready-made dashboard view as `{dashboard}`.\n\nAn existing file is **never replaced here** — the EMS is meant to be edited (section 1 holds your entity ids), so setup only creates what is missing. When a newer package is bundled you get a notification and apply it yourself with the action `opendtu_ems.install_bundle`, which keeps the current file as a `.bak` copy.\n\nAfterwards **restart Home Assistant** so the entities (sensors, helpers, automations) are created.",
         "data": {
           "install": "Install and update the files in the configuration folder"
         }

@@ -53,8 +53,10 @@ integration ships) — if you already run 1.5.1 by copying the file, there is no
   repository to HACS with the type *Integration*, install it, add *OpenDTU Zero-Export EMS* and
   it writes `<config>/packages/opendtu_ems.yaml` plus `<config>/opendtu_ems/ems-overview.yaml`
   (the dashboard view) into the config folder. The EMS itself stays the one YAML file it was.
-  - safe update rules: a local file is only replaced when it is **older** (`.bak` copy kept),
-    a newer file and a locally edited file at the same version are left untouched,
+  - safe update rules: setup only **creates** files - it never replaces an existing package, so
+    the entity ids a user edited in section 1 survive. A newer bundled version is reported in the
+    notification and on `sensor.ems_bundle`, and applied explicitly with the action
+    `opendtu_ems.install_bundle`, which keeps the current file as `.bak`,
   - result as a persistent notification and in `sensor.ems_bundle` (installed version, action,
     `restart_required`), plus the action `opendtu_ems.install_bundle` for updates,
   - a separate notification when `configuration.yaml` has no `packages:` key, naming the two

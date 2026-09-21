@@ -79,9 +79,10 @@ package for you:
 4. Continue with step 2 in [2.2](#22-by-hand) below (the `packages:` key) — the integration
    tells you when it is missing — and then **restart** once more.
 
-An existing package file is only replaced when it is **older**; the old file stays as
-`opendtu_ems.yaml.bak`, and a newer or hand-edited file is left untouched (the notification says
-which case applied). After a HACS update, run the action `opendtu_ems.install_bundle` and restart.
+Setup only **creates** files: an existing package file is never replaced, because section 1 of it
+is yours to edit. When a newer package is bundled you get a notification with the version and the
+way to apply it (action `opendtu_ems.install_bundle`, the current file is kept as
+`opendtu_ems.yaml.bak`), so your entity ids cannot be reset behind your back.
 
 ### 2.2 By hand
 

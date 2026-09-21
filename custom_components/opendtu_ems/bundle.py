@@ -4,13 +4,18 @@ Deliberately free of Home Assistant imports (only the standard library), so it
 can be tested without a Home Assistant installation - see
 `tests/validate_integration.py`.
 
-The rules are chosen so that a user's local edits are never silently lost:
+The rules are chosen so that a user's file is never silently lost - section 1 of the
+package is *meant* to be edited, so the automatic path only ever creates a file:
 
-* nothing installed            -> install the bundled file
-* installed, identical         -> do nothing
-* installed, older header      -> back up as `<file>.bak` and install
-* installed, newer header      -> keep it (the user is ahead of the release)
-* installed, same version but different content (local edits) -> keep it
+* nothing installed                 -> install the bundled file
+* installed, identical              -> do nothing
+* installed, older header           -> report `available`, write nothing (the service
+                                       applies it, keeping a `.bak`)
+* installed, newer header           -> keep it (the user is ahead of the release)
+* installed, same version, edited   -> keep it
+
+`allow_update=True` (the `opendtu_ems.install_bundle` action) is the explicit way to
+replace an existing file; it keeps the previous content as `<file>.bak`.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ PACKAGES_RE = re.compile(r"^\s*packages\s*:", re.MULTILINE)
 INSTALLED = "installed"
 UPDATED = "updated"
 CURRENT = "current"
+AVAILABLE = "available"
 FAILED = "failed"
 
 # the suffix a replaced file is kept under
@@ -49,6 +55,11 @@ class InstallResult:
     def changed(self) -> bool:
         """True when the target file was written (a restart is needed then)."""
         return self.action in (INSTALLED, UPDATED)
+
+    @property
+    def update_available(self) -> bool:
+        """True when a newer bundled file exists but was not written."""
+        return self.action == AVAILABLE
 
 
 def read_version(text: str) -> str | None:
@@ -74,8 +85,18 @@ def packages_configured(configuration_yaml: str) -> bool:
     return PACKAGES_RE.search(configuration_yaml) is not None
 
 
-def install_file(source: Path, target: Path, *, force: bool = False) -> InstallResult:
-    """Install/refresh one file. Never raises - problems come back as `FAILED`."""
+def install_file(
+    source: Path,
+    target: Path,
+    *,
+    allow_update: bool = False,
+) -> InstallResult:
+    """Install/refresh one file. Never raises - problems come back as `FAILED`.
+
+    `allow_update` is the explicit path (the service): it replaces an existing file
+    and keeps the previous content as `<file>.bak`. Without it an existing file is
+    never written - a newer bundled version is only reported as `AVAILABLE`.
+    """
     name = target.name
     if not source.is_file():
         return InstallResult(FAILED, name, str(target), error=f"bundle file missing: {source}")
@@ -96,15 +117,15 @@ def install_file(source: Path, target: Path, *, force: bool = False) -> InstallR
 
     installed_version = read_version(installed) if installed is not None else None
 
-    if installed is not None and not force:
+    if installed is not None and not allow_update:
         if installed == text:
             return InstallResult(CURRENT, name, str(target), version, installed_version)
-        if parse_version(installed_version) > parse_version(version):
-            # a local file from a newer release - leave it alone
-            return InstallResult(CURRENT, name, str(target), version, installed_version)
-        if parse_version(installed_version) == parse_version(version):
-            # same version, different bytes: the user edited it on purpose
-            return InstallResult(CURRENT, name, str(target), version, installed_version)
+        if parse_version(installed_version) < parse_version(version):
+            # a newer file is bundled, but replacing section 1 by itself would
+            # reset the entity ids the user edited - report it instead
+            return InstallResult(AVAILABLE, name, str(target), version, installed_version)
+        # same version with local edits, or a newer release than ours
+        return InstallResult(CURRENT, name, str(target), version, installed_version)
 
     backup: Path | None = None
     try:

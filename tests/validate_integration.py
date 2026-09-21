@@ -227,8 +227,14 @@ def behaviour_checks() -> None:
         target.write_text(old, encoding="utf-8")
         result = bundle.install_file(source, target)
         backup = target.with_name(target.name + ".bak")
+        check(result.action == bundle.AVAILABLE and target.read_text("utf-8") == old,
+              "older target -> only reported, never written automatically")
+        check(result.update_available and not result.changed,
+              "an available update is not a change (no restart needed)")
+
+        result = bundle.install_file(source, target, allow_update=True)
         check(result.action == bundle.UPDATED and target.read_text("utf-8") == new,
-              "older target -> updated")
+              "allow_update (the service) replaces the file")
         check(backup.is_file() and backup.read_text("utf-8") == old,
               "the previous file is kept as .bak")
         backup.unlink()
@@ -237,6 +243,7 @@ def behaviour_checks() -> None:
         result = bundle.install_file(source, target)
         check(result.action == bundle.CURRENT and target.read_text("utf-8") == newer,
               "a newer local file is never overwritten")
+        check(not result.update_available, "a newer local file is not an available update")
         check(not backup.exists(), "no backup is made when nothing is written")
 
         target.write_text(new.replace("body new", "locally edited"), encoding="utf-8")
@@ -244,10 +251,10 @@ def behaviour_checks() -> None:
         check(result.action == bundle.CURRENT and "locally edited" in target.read_text("utf-8"),
               "a locally edited file at the same version is left alone")
 
-        result = bundle.install_file(source, target, force=True)
+        result = bundle.install_file(source, target, allow_update=True)
         check(result.action == bundle.UPDATED and target.read_text("utf-8") == new,
-              "force overwrites (the service does that)")
-        check(backup.is_file(), "force keeps a backup too")
+              "allow_update overwrites a hand-edited file (explicitly asked for)")
+        check(backup.is_file(), "that overwrite keeps a backup too")
         backup.unlink()
 
         result = bundle.install_file(work / "missing.yaml", target)

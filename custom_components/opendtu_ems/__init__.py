@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from homeassistant.components import persistent_notification
@@ -25,6 +26,7 @@ from homeassistant.helpers.typing import ConfigType
 from homeassistant.helpers import config_validation as cv
 
 from .bundle import (
+    AVAILABLE,
     CURRENT,
     FAILED,
     InstallResult,
@@ -71,6 +73,11 @@ class EmsBundleData:
         """The files that could not be handled."""
         return tuple(result for result in self.results if result.action == FAILED)
 
+    @property
+    def updates_available(self) -> tuple[InstallResult, ...]:
+        """Files where a newer version is bundled but was not written."""
+        return tuple(result for result in self.results if result.update_available)
+
     def result_for(self, name: str) -> InstallResult | None:
         """The result for one target file name."""
         return next((result for result in self.results if result.name == name), None)
@@ -79,12 +86,18 @@ class EmsBundleData:
 TypeData = EmsBundleData
 
 
-def install_all(config_dir: Path, bundle_dir: Path, *, force: bool = False) -> EmsBundleData:
+def install_all(
+    config_dir: Path, bundle_dir: Path, *, allow_update: bool = False
+) -> EmsBundleData:
     """Install both bundled files. Pure filesystem work, run in an executor."""
     package_source = bundle_dir / BUNDLE_PACKAGE
     results = (
-        install_file(package_source, config_dir / TARGET_PACKAGE, force=force),
-        install_file(bundle_dir / BUNDLE_DASHBOARD, config_dir / TARGET_DASHBOARD, force=force),
+        install_file(package_source, config_dir / TARGET_PACKAGE, allow_update=allow_update),
+        install_file(
+            bundle_dir / BUNDLE_DASHBOARD,
+            config_dir / TARGET_DASHBOARD,
+            allow_update=allow_update,
+        ),
     )
 
     bundle_version = None
@@ -114,7 +127,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         if not entries:
             raise ServiceValidationError("The OpenDTU Zero-Export EMS integration is not set up")
         entry = entries[0]
-        await _async_install(hass, entry, force=True)
+        # explicit request: replace the installed files (a .bak copy is kept)
+        await _async_install(hass, entry, allow_update=True)
         await hass.config_entries.async_reload(entry.entry_id)
 
     hass.services.async_register(DOMAIN, SERVICE_INSTALL, handle_install_bundle)
@@ -122,8 +136,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Install the bundle (unless the user opted out) and report the result."""
-    await _async_install(hass, entry, force=False)
+    """Install the bundle (unless the user opted out) and report the result.
+
+    Nothing that already exists is written here - an installed package is only
+    replaced when the user runs the service, so hand-edited entity ids survive.
+    """
+    await _async_install(hass, entry, allow_update=False)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
@@ -137,19 +155,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unloaded
 
 
-async def _async_install(hass: HomeAssistant, entry: ConfigEntry, *, force: bool) -> None:
+async def _async_install(hass: HomeAssistant, entry: ConfigEntry, *, allow_update: bool) -> None:
     """Run the install (or only the check) and inform the user."""
     config_dir = Path(hass.config.path())
     bundle_dir = Path(__file__).parent / BUNDLE_DIR
 
     if entry.data.get(CONF_INSTALL, True):
-        data = await hass.async_add_executor_job(install_all, config_dir, bundle_dir, force)
+        data = await hass.async_add_executor_job(
+            partial(install_all, config_dir, bundle_dir, allow_update=allow_update)
+        )
     else:
         # the user manages the files themselves - still report the state
-        results = await hass.async_add_executor_job(
-            _check_only, config_dir, bundle_dir
-        )
-        data = results
+        data = await hass.async_add_executor_job(_check_only, config_dir, bundle_dir)
 
     entry.runtime_data = data
     _notify(hass, data)
@@ -200,6 +217,7 @@ def _notify(hass: HomeAssistant, data: EmsBundleData) -> None:
         for failure in data.failures:
             lines.append(f"**{failure.name}** could not be handled: {failure.error}")
     installed = [r for r in data.results if r.changed]
+    available = data.updates_available
     if installed:
         for result in installed:
             if result.action == "updated":
@@ -213,6 +231,19 @@ def _notify(hass: HomeAssistant, data: EmsBundleData) -> None:
         lines.append(
             "**Restart Home Assistant** (Settings → System → Restart) to create the entities. "
             f"The package is at `{TARGET_PACKAGE}`, the dashboard view at `{TARGET_DASHBOARD}`."
+        )
+    elif available and not data.failures:
+        for result in available:
+            lines.append(
+                f"A newer **{result.name}** is bundled ({result.version}, you have "
+                f"{result.installed_version}). **Nothing was written** - the installed file can "
+                "contain your own entity ids."
+            )
+        lines.append("")
+        lines.append(
+            "To update: Developer tools → Actions → `opendtu_ems.install_bundle` (the current "
+            "file is kept as `.bak`), then **restart Home Assistant**. Compare the two files "
+            "first if you edited section 1."
         )
     elif not data.failures:
         package = data.result_for("opendtu_ems.yaml")

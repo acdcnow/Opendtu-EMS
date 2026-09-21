@@ -206,9 +206,11 @@ that package (and the ready-made dashboard view) inside itself and installs it f
    | `<config>/packages/opendtu_ems.yaml` | the EMS package |
    | `<config>/opendtu_ems/ems-overview.yaml` | the Lovelace view to paste into a dashboard |
 
-   Existing files are only replaced when they are **older**; the previous file is kept as
-   `.bak`. A newer or hand-edited file is left alone. The result is shown as a notification and
-   in `sensor.ems_bundle` (attributes: installed version, action, `restart_required`).
+   Existing files are **never replaced by setup** — the package is meant to be edited (section 1
+   holds your entity ids), so only missing files are created. Is a newer package bundled, you get
+   a notification and apply it yourself with the action `opendtu_ems.install_bundle`, which keeps
+   the current file as `.bak`. The result is shown as a notification and in `sensor.ems_bundle`
+   (installed version, action, `restart_required`, `update_available`).
 6. If the notification says that `packages:` is missing, add it once to `configuration.yaml`:
 
    ```yaml
@@ -218,8 +220,10 @@ that package (and the ready-made dashboard view) inside itself and installs it f
 
 7. **Restart** again  the entities appear (`sensor.ems_mode` = `FULL` while the sun is up).
 
-After a HACS update the new version is downloaded but not applied: run the service
+After a HACS update the new version is downloaded but not applied: run the action
 `opendtu_ems.install_bundle` (Developer tools → Actions) or re-add the integration, then restart.
+The action replaces the installed package — compare it with your own version first if you edited
+section 1; the previous file stays as `.bak`.
 
 Installing *without* HACS is supported and identical in effect  copy `packages/opendtu_ems.yaml`
 and, if you want, `dashboards/ems-overview.yaml` by hand.
