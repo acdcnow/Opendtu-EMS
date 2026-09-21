@@ -30,6 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`<Plugin …> Repository structure for vX.Y.Z is not compliant`) explained — what the category
   prefix and the version in the message mean, why no HACS type fits a package, and how to
   remove the entry (plus why pointing `hacs.json` at the dashboard YAML is not a workaround).
+- `docs/TROUBLESHOOTING.md` + `docs/DASHBOARD.md`: the frontend message
+  `Entity not available: sensor.ems_…` explained. It always means the id is absent from the state
+  machine — the ApexCharts card reports it per series it cannot resolve — with the four causes
+  (a second definition of the same id or `unique_id`, a registry rename or a disabled entity, a
+  package older than the view, a failed template entity) and the fix.
+
+### Tests
+
+- New guard: every entity id mentioned in `README.md` and `docs/*.md` must be created by the
+  package — the dashboard was already checked, the prose was not. `CHANGELOG.md` is excluded on
+  purpose because it documents removed entities.
 
 ## [1.5.1] - 2026-09-20
 

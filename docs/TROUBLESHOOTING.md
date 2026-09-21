@@ -155,6 +155,41 @@ pip install pyyaml jinja2
 python tests/validate_package.py packages/opendtu_ems.yaml
 ```
 
+### Only *some* entities: `Entity not available: sensor.ems_…` in a card
+
+A card that prints `Entity not available: <entity_id>` is saying that the id is **not in Home
+Assistant's state machine at all** — the ApexCharts card, for example, looks every series up in
+`hass.states` and reports this for each id it cannot resolve. It is never about the recorder, the
+history or the card configuration (an invalid card config flags *every* series at once), and it is
+never the package being wrong: the test suite cross-checks every entity referenced in the
+dashboard **and** in these docs against the entities the package creates.
+
+So a single missing id means it exists under a **different** id, or not at all:
+
+1. **A second definition of the same entity.** A leftover copy of the EMS (an older file next to
+   the package, a copy in `configuration.yaml`, or a helper created in the UI) already uses the id
+   or the `unique_id`. Home Assistant keeps the first definition and silently drops the second.
+   Search the whole config directory:
+
+   ```bash
+   grep -rn "ems_house_load\|ems_limit_target" /config --include=*.yaml
+   ```
+
+   There must be exactly one definition of each id.
+2. **Renamed or disabled in the registry.** Settings → Devices & services → **Entities**, search
+   `ems_`: an entity whose *entity id* was changed by hand (e.g. `sensor.ems_limit_target_2`) or a
+   **disabled** entity does not appear in the frontend and reads `unknown` in `states()` — exactly
+   this symptom. Set the entity id back to the one the card uses, or enable the entity.
+3. **The package is older than the dashboard.** `sensor.ems_house_load` exists since **v1.4.0**
+   only, so an older package plus a current view produces the message for it.
+4. **A template entity failed.** Developer tools → States: if these ids are missing while
+   `sensor.ems_grid_power` and the helpers are there, look for `TemplateError` in Settings → Logs
+   and check that no `name:` was changed.
+
+In all four cases the fix is the same: leave exactly one definition, re-copy the current package,
+restart, and restore the entity ids in the registry. **No dashboard change is needed** — the series
+draws again as soon as the id exists.
+
 ## Mode is NIGHT or STARTING
 
 Both are normal. `NIGHT` means the sun is below the horizon *and* PV is under 200 W — the

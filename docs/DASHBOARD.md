@@ -115,6 +115,14 @@ exactly. If you would rather see the card's own calculation, drop those two line
 `kilo_threshold: 10000` keeps the numbers in watts up to 10 kW, which suits a 4.7 kW PV +
 14.6 kWh setup. Lower it to e.g. `1000` if you prefer kW.
 
+### When a card reports *Entity not available*
+
+That message is not a dashboard problem: the card looks the entity up in `hass.states` and the id
+is missing there. Either the entity lives under a different id (renamed or disabled in the entity
+registry, or a second copy of the EMS claims the id), or the installed package is older than this
+view. The fix is on the entity side, never in the card — see
+[TROUBLESHOOTING](TROUBLESHOOTING.md#the-ems-entities-do-not-appear-at-all).
+
 ---
 
 ## Reading the result

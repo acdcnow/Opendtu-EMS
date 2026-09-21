@@ -303,6 +303,11 @@ DELIVERY_CASES = {
 COUNTER_CASES = {"0": "1", "2": "3", "9": "9"}
 NOTIFY_CASES = {"0": False, "2": False, "3": True, "4": False}
 
+# entity ids that appear in the documentation on purpose as a wrong example
+# (TROUBLESHOOTING: a hand-renamed entity id) - everything else in the docs has
+# to be created by the package
+DOC_EXAMPLES = {"sensor.ems_limit_target_2"}
+
 
 def main(argv: list[str]) -> int:
     path = Path(argv[1]) if len(argv) > 1 else DEFAULT_PACKAGE
@@ -358,6 +363,17 @@ def main(argv: list[str]) -> int:
     print(f"  automation ids referenced in docs: "
           f"{', '.join(sorted(referenced_automations)) or '-'}")
 
+    # every entity the package creates - shared by the dashboard (1c) and the
+    # documentation (1d) checks below
+    created_entities = set()
+    for domain in ("input_boolean", "input_number", "input_datetime"):
+        created_entities |= {f"{domain}.{key}" for key in doc.get(domain, {})}
+    created_entities |= {f"script.{key}" for key in doc.get("script", {})}
+    created_entities |= expected_automations
+    for block in doc["template"]:
+        for domain, entities in block.items():
+            created_entities |= {f"{domain}.{slugify(e.get('name'))}" for e in entities}
+
     # --- 1c. dashboard references ----------------------------------------
     dashboard = ROOT / "dashboards" / "ems-overview.yaml"
     if dashboard.exists():
@@ -368,14 +384,6 @@ def main(argv: list[str]) -> int:
         unknown_cards = sorted(cards - allowed_cards)
         if unknown_cards:
             fails.append(("dashboard cards", [f"undocumented: {unknown_cards}"]))
-        created_entities = set()
-        for domain in ("input_boolean", "input_number", "input_datetime"):
-            created_entities |= {f"{domain}.{key}" for key in doc.get(domain, {})}
-        created_entities |= {f"script.{key}" for key in doc.get("script", {})}
-        created_entities |= expected_automations
-        for block in doc["template"]:
-            for domain, entities in block.items():
-                created_entities |= {f"{domain}.{slugify(e.get('name'))}" for e in entities}
         dash = yaml.safe_load(raw_dashboard)
         referenced: set[str] = set()
 
@@ -402,6 +410,31 @@ def main(argv: list[str]) -> int:
         print(f"  dashboard: {len(cards)} custom card types, "
               f"{len(referenced)} entity references")
         print(f"  existing (external) sensors used: {', '.join(external) or '-'}")
+
+    # --- 1d. documentation references -------------------------------------
+    # The dashboard is checked above, the prose was not - and a snippet copied
+    # from the docs with a stale entity id is exactly what produces
+    # "Entity not available: sensor.ems_..." in a card while the package is
+    # fine. CHANGELOG.md is excluded on purpose: it documents removed entities.
+    doc_scope = ("sensor.ems_", "binary_sensor.ems_", "input_", "script.ems",
+                 "automation.opendtu")
+    doc_refs: set[str] = set()
+    for source in [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]:
+        for entity_id in re.findall(
+                r"\b(?:sensor|binary_sensor|input_boolean|input_number|input_datetime"
+                r"|script|automation)\.[a-z0-9_]+",
+                source.read_text(encoding="utf-8")):
+            # "sensor.ems_*" used as a family name in a sentence is not a reference
+            if entity_id.endswith("_") or not entity_id.startswith(doc_scope):
+                continue
+            doc_refs.add(entity_id)
+    dangling_docs = sorted(doc_refs - created_entities - DOC_EXAMPLES)
+    if dangling_docs:
+        fails.append(("documentation entities",
+                      [f"in the docs but not created by the package: {dangling_docs}"]))
+    print(f"  documentation: {len(doc_refs)} EMS entity references, "
+          f"{len(dangling_docs)} without a matching entity")
+
     automations = {a["id"]: a for a in doc.get("automation", [])}
     for identifier in ("opendtu_ems_loop", "opendtu_ems_watchdog"):
         if identifier not in automations:
@@ -860,7 +893,8 @@ def main(argv: list[str]) -> int:
         print(f"\n{len(fails)} FAILURES")
         return 1
     print(f"  all checks passed ({total} templates, "
-          f"{len(CONTROL_CASES)} control + {len(DELIVERY_CASES)} delivery scenarios)")
+          f"{len(CONTROL_CASES)} control + {len(DELIVERY_CASES)} delivery scenarios, "
+          f"{len(doc_refs)} doc entity references)")
     return 0
 
 
