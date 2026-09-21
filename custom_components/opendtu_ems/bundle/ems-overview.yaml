@@ -1,0 +1,322 @@
+# =============================================================================
+#  OpenDTU EMS - Lovelace view
+# -----------------------------------------------------------------------------
+#  A ready-made overview: energy flow, operation modes, PV inputs, battery and
+#  grid, plus the controls and the diagnostics of the EMS package.
+#
+#  REQUIRED HACS FRONTEND CARDS (all in the HACS default repositories)
+#    - Power Flow Card Plus     flixlix/power-flow-card-plus
+#    - Mushroom                 piitaya/lovelace-mushroom
+#    - ApexCharts Card          RomRider/apexcharts-card
+#    - Mini Graph Card          kalkih/mini-graph-card
+#  Everything else is built into Home Assistant.
+#
+#  HOW TO USE
+#    Dashboard -> Edit -> three dot menu -> Raw configuration editor, then paste
+#    this under the existing "views:" key (keep the indentation!). Or create a
+#    new dashboard ("Start with an empty dashboard") and paste the whole file.
+#
+#  EDIT: the per-inverter sensors marked "EDIT" below are guesses based on the
+#  OpenDTU naming scheme. Find the real ids in Developer tools -> States
+#  (search for "ac_power"). Wrong ids do not break anything - the templates fall
+#  back to the totals.
+# =============================================================================
+
+title: Energy
+path: energy
+icon: mdi:solar-power-variant
+theme: default
+
+cards:
+  # ---------------------------------------------------------------------------
+  # 1) live energy flow: grid, solar, battery, house load
+  #    sign conventions already match the card:
+  #      grid     positive = import, negative = export
+  #      battery  positive = charging, negative = discharging
+  #      solar    positive = production
+  # ---------------------------------------------------------------------------
+  - type: custom:power-flow-card-plus
+    title: Energy flow
+    clickable_entities: true
+    use_new_flow_rate_model: true
+    min_expected_power: 10
+    max_expected_power: 5000
+    kilo_threshold: 10000          # stay in W up to 10 kW
+    display_zero_lines:
+      mode: transparency
+      transparency: 70
+    entities:
+      grid:
+        entity: sensor.ems_grid_power
+        name: Grid
+        display_state: one_way
+        color_circle: true
+        display_zero_tolerance: 20
+        secondary_info:
+          template: >-
+            {{ state_attr('sensor.ems_grid_power', 'source') or '-' }}
+      solar:
+        entity: sensor.solarleistung_gesamt
+        name: PV
+        display_zero_state: true
+        secondary_info:
+          template: >-
+            {%- set ids = ['sensor.hm1500_ac_power',
+                           'sensor.hms1600_a_ac_power',
+                           'sensor.hms1600_b_ac_power'] -%}
+            {%- set ns = namespace(vals=[]) -%}
+            {%- for i in ids if has_value(i) -%}
+              {%- set ns.vals = ns.vals + [(states(i) | float(0) | round(0) | int(0))] -%}
+            {%- endfor -%}
+            {%- if ns.vals | count -%}{{ ns.vals | join(' / ') }} W
+            {%- else -%}3 inputs{%- endif -%}
+      battery:
+        entity: sensor.serialbattery_seplos_leistung
+        name: Battery
+        state_of_charge: sensor.serialbattery_seplos_ladestand
+        display_state: one_way
+        color_state_of_charge_value: color_dynamically
+        # EDIT: show the Victron charge stage (Bulk / Absorption / Float) inside
+        # the battery circle by uncommenting this and using your entity id:
+        # secondary_info:
+        #   entity: sensor.victron_battery_state
+      home:
+        entity: sensor.ems_house_load
+        name: House
+        override_state: true       # use our own load calculation
+        color_icon: true
+
+  # ---------------------------------------------------------------------------
+  # 2) operation modes and key numbers
+  # ---------------------------------------------------------------------------
+  - type: custom:mushroom-chips-card
+    chips:
+      - type: template
+        entity: sensor.ems_mode
+        icon: mdi:state-machine
+        content: >-
+          {%- set m = states('sensor.ems_mode') -%}
+          {%- set v = '' -%}
+          {%- if has_value('sensor.victron_battery_state') -%}
+            {%- set v = ' · ' ~ states('sensor.victron_battery_state') -%}
+          {%- endif -%}
+          {{ m }}{{ v }}
+        icon_color: >-
+          {%- set m = states('sensor.ems_mode') -%}
+          {%- if m == 'FULL' -%}green
+          {%- elif m in ['NIGHT', 'STARTING'] -%}blue
+          {%- elif m == 'NO_BATTERY' -%}orange
+          {%- else -%}red{%- endif -%}
+        tap_action:
+          action: more-info
+      - type: template
+        entity: sensor.ems_limit_target
+        icon: mdi:speedometer
+        content: "limit {{ states('sensor.ems_limit_target') }} %"
+        icon_color: indigo
+        tap_action:
+          action: more-info
+      # how much charge power the battery is offered / how much of the limit is
+      # meant for charging - the two numbers that explain the law
+      - type: template
+        entity: sensor.ems_limit_target
+        icon: mdi:battery-arrow-up-outline
+        content: >-
+          {%- set a = state_attr('sensor.ems_limit_target', 'allowance') -%}
+          {%- set p = state_attr('sensor.ems_limit_target', 'charge_push') -%}
+          {%- if a is not none -%}
+            offer {{ a }} W · push {{ p }} W
+          {%- else -%}offer – W{%- endif -%}
+        icon_color: >-
+          {{ 'green' if (state_attr('sensor.ems_limit_target', 'charge_push') | float(0)) > 0
+             else 'grey' }}
+        tap_action:
+          action: more-info
+      - type: template
+        entity: sensor.ems_inverter_capacity
+        icon: mdi:solar-panel
+        content: >-
+          {{ state_attr('sensor.ems_inverter_capacity', 'active') }}/3 ·
+          {{ states('sensor.ems_inverter_capacity') }} W
+        icon_color: >-
+          {{ 'green' if (state_attr('sensor.ems_inverter_capacity', 'active') | int(0)) == 3
+             else 'orange' }}
+        tap_action:
+          action: more-info
+      - type: template
+        entity: sensor.ems_pv_delivery
+        icon: mdi:chart-bell-curve-cumulative
+        content: "delivery {{ states('sensor.ems_pv_delivery') }} %"
+        icon_color: >-
+          {{ 'green' if (states('sensor.ems_pv_delivery') | float(100)) >= 70
+             else 'orange' }}
+        tap_action:
+          action: more-info
+      - type: template
+        entity: binary_sensor.ems_degraded
+        icon: >-
+          {{ 'mdi:alert-outline' if is_state('binary_sensor.ems_degraded', 'on')
+             else 'mdi:check-circle-outline' }}
+        content: >-
+          {{ 'degraded' if is_state('binary_sensor.ems_degraded', 'on') else 'ok' }}
+        icon_color: >-
+          {{ 'red' if is_state('binary_sensor.ems_degraded', 'on') else 'green' }}
+        tap_action:
+          action: more-info
+
+  # ---------------------------------------------------------------------------
+  # 3) trends: PV, house load, grid, battery (W) and the EMS limit (%)
+  # ---------------------------------------------------------------------------
+  - type: custom:apexcharts-card
+    header:
+      show: true
+      title: PV · house · grid · battery (today)
+      show_states: false
+    graph_span: 24h
+    span:
+      start: day
+    now:
+      show: true
+      label: now
+    all_series_config:
+      type: line
+      stroke_width: 2
+      group_by:
+        func: avg
+        duration: 5min
+    yaxis:
+      - id: power
+        decimals: 0
+        apex_config:
+          tickAmount: 4
+      - id: pct
+        show: false
+        min: 0
+        max: 100
+    series:
+      - entity: sensor.solarleistung_gesamt
+        name: PV
+        type: area
+        yaxis_id: power
+        color: "#ffb300"
+        opacity: 0.15
+      - entity: sensor.ems_house_load
+        name: House
+        yaxis_id: power
+        color: "#44739e"
+      - entity: sensor.ems_grid_power
+        name: Grid (+) / export (−)
+        yaxis_id: power
+        color: "#e02b3f"
+        color_threshold:
+          - value: 0
+            color: "#43a047"
+          - value: 1
+            color: "#e02b3f"
+      - entity: sensor.serialbattery_seplos_leistung
+        name: Battery (+ charge)
+        yaxis_id: power
+        color: "#8e44ad"
+      - entity: sensor.ems_limit_target
+        name: EMS limit
+        yaxis_id: pct
+        color: "#9e9e9e"
+        stroke_width: 1
+        curve: stepline
+        opacity: 0.6
+
+  # ---------------------------------------------------------------------------
+  # 4) battery state of charge and the manual controls
+  # ---------------------------------------------------------------------------
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - type: custom:mini-graph-card
+        name: Battery state of charge
+        icon: mdi:battery-heart-variant
+        entities:
+          - entity: sensor.serialbattery_seplos_ladestand
+            name: SoC
+        min: 0
+        max: 100
+        hours_to_show: 48
+        points_per_hour: 6
+        line_width: 2
+        show:
+          labels: true
+          fill: true
+        color_thresholds:
+          - value: 20
+            color: "#e02b3f"
+          - value: 50
+            color: "#f7c948"
+          - value: 80
+            color: "#43a047"
+      - type: entities
+        title: EMS controls
+        show_header_toggle: false
+        entities:
+          - entity: input_boolean.ems_enabled
+            name: EMS active
+          - entity: input_number.ems_manual_pct
+            name: Manual limit (-1 = auto)
+          - entity: input_boolean.ems_simulate_battery_loss
+            name: Test - simulate battery loss
+          - entity: input_number.ems_grid_bias
+          - entity: input_number.ems_settle_seconds
+          - entity: input_number.ems_max_step_pct
+          - entity: input_number.ems_hysteresis_pct
+          - entity: input_number.ems_failsafe_pct
+          - entity: input_number.ems_soc_stop
+          - entity: input_number.ems_export_tolerance
+          - entity: input_number.ems_export_grace
+          - entity: input_number.ems_reprobe_seconds
+          - entity: input_datetime.ems_last_apply
+
+  # ---------------------------------------------------------------------------
+  # 5) diagnostics (useful while tuning)
+  # ---------------------------------------------------------------------------
+  - type: markdown
+    title: EMS diagnostics
+    content: >-
+      **Mode** {{ states('sensor.ems_mode') }} ·
+      **meter** {{ state_attr('sensor.ems_grid_power', 'source') }}
+      ({{ states('sensor.ems_grid_power') }} W) ·
+      **inverters** {{ state_attr('sensor.ems_inverter_capacity', 'active') }}/3
+      at {{ state_attr('sensor.ems_inverter_capacity', 'current_pct') }} %
+
+
+      **commanded** {{ state_attr('sensor.ems_pv_delivery', 'expected_w') }} W ·
+      **produced** {{ state_attr('sensor.ems_pv_delivery', 'actual_w') }} W
+      ({{ states('sensor.ems_pv_delivery') }} %) ·
+      **limit** {{ states('sensor.ems_limit_target') }} %
+
+
+      **last write** {{ states('input_datetime.ems_last_apply') }} ·
+      **started** {{ states('input_datetime.ems_started_at') }}
+
+
+      **charge limit** {{ states('input_number.ems_max_charge_power') }} W ·
+      **SoC** {{ states('sensor.serialbattery_seplos_ladestand') }} % ·
+      **battery** {{ states('sensor.serialbattery_seplos_leistung') }} W
+
+
+      **offer (learned)** {{ states('input_number.ems_charge_allowance') }} W ·
+      **asked for charging** {{ state_attr('sensor.ems_limit_target', 'charge_push') }} W ·
+      **export ticks** {{ states('input_number.ems_export_ticks') }}
+
+  - type: entities
+    title: Source sensors
+    show_header_toggle: false
+    entities:
+      - entity: sensor.ems_grid_power
+      - entity: sensor.ems_house_load
+      - entity: sensor.solarleistung_gesamt
+      - entity: sensor.serialbattery_seplos_leistung
+      - entity: sensor.serialbattery_seplos_ladestand
+      - entity: binary_sensor.ems_degraded
+      - entity: sensor.ems_pv_delivery
+      - entity: sensor.ems_inverter_capacity
+      - entity: input_number.ems_charge_allowance
+      - entity: input_number.ems_export_ticks

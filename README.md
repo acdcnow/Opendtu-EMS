@@ -17,7 +17,9 @@ dies.
 * a ready-made dashboard (`dashboards/ems-overview.yaml`) — see [docs/DASHBOARD.md](docs/DASHBOARD.md)
 * documented in depth in the [wiki](https://github.com/acdcnow/opendtu-ems/wiki): architecture
   concept, software design, workflow diagrams — and the archived control law of ≤ 1.4.0
-* no custom integration, no Node-RED, no AppDaemon — and HACS is only needed for the dashboard cards (see [Can HACS install this?](#can-hacs-install-this))
+* no custom component needs to be written by you and the EMS stays one YAML file — HACS
+  delivers that file (see [Install with HACS](#install-with-hacs)) and provides the four
+  dashboard cards
 * written for **Home Assistant 2026.9+** (modern `triggers` / `conditions` / `actions` syntax)
 * 73 Jinja templates, parsed and rendered by CI on every push
 
@@ -31,7 +33,7 @@ dies.
 - [Entities it creates](#entities-it-creates)
 - [Requirements](#requirements)
 - [Quick install](#quick-install)
-- [Can HACS install this?](#can-hacs-install-this)
+- [Install with HACS](#install-with-hacs)
 - [Day-to-day use](#day-to-day-use)
 - [Why the relative limits](#why-the-relative-limits)
 - [Hardware backstop](#hardware-backstop)
@@ -155,6 +157,13 @@ Plus 21 helpers (3 switches, 16 numbers, 2 date/times) — see
 
 ## Quick install
 
+**Option A - HACS (recommended):** add this repository to HACS as an **Integration**, install
+it, then add *OpenDTU Zero-Export EMS* under Settings → Devices & services. It writes
+`packages/opendtu_ems.yaml` and the dashboard view into your config folder. Restart when asked.
+See [Install with HACS](#install-with-hacs).
+
+**Option B - manual copy:**
+
 1. Copy `packages/opendtu_ems.yaml` into your Home Assistant `<config>/packages/` folder.
 2. Enable packages in `configuration.yaml` — **one of these two forms**:
 
@@ -178,17 +187,46 @@ Plus 21 helpers (3 switches, 16 numbers, 2 date/times) — see
 
 Full walkthrough with verification and fail-safe tests: [docs/INSTALL.md](docs/INSTALL.md).
 
-## Can HACS install this?
+## Install with HACS
 
-**No — HACS has no repository type for packages**, and this is a package: a YAML file that
-Home Assistant itself loads at start-up (`packages:` / `!include_dir_named`). HACS only knows
-six types — `integration` (`custom_components/<domain>/manifest.json`), `plugin`/dashboard (a
-`.js` file), `theme`, `template` (`.jinja`), `python_script` and `appdaemon` — so there is
-nothing for it to copy into place. Adding this repository as a custom repository would end in
-*a structure that is not compliant*, whichever type you pick. That is why the install is a
-file copy.
+This repository is a **HACS integration** (`custom_components/opendtu_ems/`). The integration is
+deliberately small — the EMS stays one YAML package — but it is what makes HACS work: it ships
+that package (and the ready-made dashboard view) inside itself and installs it for you.
 
-HACS is however used **for the dashboard cards** in `dashboards/ems-overview.yaml`:
+1. HACS → ⋮ (top right) → **Custom repositories**
+2. Repository: `https://github.com/acdcnow/opendtu-ems` · Type: **Integration** → *Add*
+3. Search *OpenDTU Zero-Export EMS* in HACS → **Download** (mind that HACS downloads the latest
+   **release**, so pick the version you want)
+4. **Restart Home Assistant** (a custom integration is only loaded at start-up)
+5. Settings → Devices & services → *Add integration* → **OpenDTU Zero-Export EMS**
+   → confirm. The integration writes:
+
+   | File | Content |
+   |---|---|
+   | `<config>/packages/opendtu_ems.yaml` | the EMS package |
+   | `<config>/opendtu_ems/ems-overview.yaml` | the Lovelace view to paste into a dashboard |
+
+   Existing files are only replaced when they are **older**; the previous file is kept as
+   `.bak`. A newer or hand-edited file is left alone. The result is shown as a notification and
+   in `sensor.ems_bundle` (attributes: installed version, action, `restart_required`).
+6. If the notification says that `packages:` is missing, add it once to `configuration.yaml`:
+
+   ```yaml
+   homeassistant:
+     packages: !include_dir_named packages
+   ```
+
+7. **Restart** again — the entities appear (`sensor.ems_mode` = `FULL` while the sun is up).
+
+After a HACS update the new version is downloaded but not applied: run the service
+`opendtu_ems.install_bundle` (Developer tools → Actions) or re-add the integration, then restart.
+
+Installing *without* HACS is supported and identical in effect — copy `packages/opendtu_ems.yaml`
+and, if you want, `dashboards/ems-overview.yaml` by hand.
+
+### HACS for the dashboard cards
+
+The four cards the dashboard uses are separate HACS downloads (type **Dashboard**):
 
 | Card | Repository | Type |
 |---|---|---|
@@ -200,10 +238,10 @@ HACS is however used **for the dashboard cards** in `dashboards/ems-overview.yam
 Search the name in HACS, Download, then paste the view — see
 [docs/DASHBOARD.md](docs/DASHBOARD.md#1-install-the-cards) for the details.
 
-> If you want HACS to manage the EMS itself, that needs a real Python integration in
-> `custom_components/` with a `manifest.json`, `config_flow.py` and entities. This repository
-> deliberately is not one: a package needs no code, no integration reload and no HACS —
-> one file, one restart.
+> Adding this repository with the type **Dashboard** (frontend/`plugin`) still fails with
+> *Repository structure … is not compliant*: a plugin must be a JavaScript file, and this is not
+> one. Use **Integration** — or install by hand
+> ([TROUBLESHOOTING](docs/TROUBLESHOOTING.md#hacs-repository-structure-is-not-compliant)).
 
 ## Day-to-day use
 

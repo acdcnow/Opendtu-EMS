@@ -1,0 +1,12 @@
+{
+  "domain": "opendtu_ems",
+  "name": "OpenDTU Zero-Export EMS",
+  "codeowners": ["@acdcnow"],
+  "config_flow": true,
+  "dependencies": ["persistent_notification"],
+  "documentation": "https://github.com/acdcnow/opendtu-ems#readme",
+  "integration_type": "helper",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/acdcnow/opendtu-ems/issues",
+  "version": "1.5.2"
+}

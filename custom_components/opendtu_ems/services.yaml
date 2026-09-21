@@ -1,0 +1,6 @@
+install_bundle:
+  name: Install bundle
+  description: >-
+    Re-install the packaged EMS YAML file and the ready-made dashboard view into
+    the configuration folder. An existing file is kept as a `.bak` copy and the
+    installed file is replaced by the bundled one.

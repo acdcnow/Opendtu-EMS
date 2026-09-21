@@ -42,6 +42,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   package — the dashboard was already checked, the prose was not. `CHANGELOG.md` is excluded on
   purpose because it documents removed entities.
 
+## [1.5.2] - 2026-09-21
+
+**HACS can now install this project.** The package itself is unchanged (1.5.1 is what the
+integration ships) — if you already run 1.5.1 by copying the file, there is nothing to update.
+
+### Added
+
+- `custom_components/opendtu_ems/` — a HACS **integration** that delivers the package. Add the
+  repository to HACS with the type *Integration*, install it, add *OpenDTU Zero-Export EMS* and
+  it writes `<config>/packages/opendtu_ems.yaml` plus `<config>/opendtu_ems/ems-overview.yaml`
+  (the dashboard view) into the config folder. The EMS itself stays the one YAML file it was.
+  - safe update rules: a local file is only replaced when it is **older** (`.bak` copy kept),
+    a newer file and a locally edited file at the same version are left untouched,
+  - result as a persistent notification and in `sensor.ems_bundle` (installed version, action,
+    `restart_required`), plus the action `opendtu_ems.install_bundle` for updates,
+  - a separate notification when `configuration.yaml` has no `packages:` key, naming the two
+    lines that are missing,
+  - brand images (`brand/icon.png`, `icon@2x.png`, `logo.png`, `logo@2x.png`) and `hacs.json`,
+    both required by HACS for the integration category.
+
+### Documentation
+
+- README: *Quick install* now lists both paths and *Can HACS install this?* (which said "no")
+  became **Install with HACS** with the exact HACS steps.
+- `docs/INSTALL.md`: new *2.1 With HACS*, the manual copy moved to *2.2 By hand*.
+- `docs/TROUBLESHOOTING.md`: the `Repository structure … is not compliant` section rewritten —
+  the category has to be **Integration**, and a stale release (before 1.5.2) is the second cause.
+
+### Tests
+
+- New `tests/validate_integration.py` (runs in CI next to the package suite): manifest keys and
+  hassfest key order, `hacs.json` keys, integration structure, brand image sizes, translation
+  parity, and the install rules against a temporary config folder (fresh install, identical file,
+  older file + backup, newer file untouched, locally edited file untouched, `force`, missing
+  bundle). It reads the version with the same code the integration uses, and fails when the
+  bundled YAML drifts away from `packages/opendtu_ems.yaml`.
+
 ## [1.5.1] - 2026-09-20
 
 **Documentation and CI only.** The package itself is unchanged (the version comment in the

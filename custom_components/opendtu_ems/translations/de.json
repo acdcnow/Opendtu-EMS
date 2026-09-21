@@ -1,0 +1,22 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "OpenDTU Zero-Export EMS",
+        "description": "Das EMS selbst ist eine einzelne Home-Assistant-**Package**-Datei. Die Einrichtung legt sie als `{package}` ab und die fertige Dashboard-Ansicht als `{dashboard}`.\n\nEine vorhandene Datei wird nur ersetzt, wenn sie **älter** ist: die alte Datei bleibt als `.bak` erhalten, eine Datei aus einer neueren Version und eine lokal bearbeitete Datei derselben Version bleiben unangetastet.\n\nDanach **Home Assistant neu starten**, damit die Entitäten (Sensoren, Helfer, Automationen) angelegt werden.",
+        "data": {
+          "install": "Dateien im Konfigurationsordner installieren und aktualisieren"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Das OpenDTU Zero-Export EMS ist bereits eingerichtet."
+    }
+  },
+  "services": {
+    "install_bundle": {
+      "name": "Paket installieren",
+      "description": "Die mitgelieferte EMS-YAML-Datei und die Dashboard-Ansicht erneut in den Konfigurationsordner schreiben, dabei eine `.bak`-Kopie behalten."
+    }
+  }
+}

@@ -1,0 +1,1223 @@
+# =============================================================================
+#  OpenDTU  ·  Battery-first / zero-export EMS      (Home Assistant 2026.9)
+#  version 1.5.1  ·  2026-09-20  ·  see CHANGELOG.md
+# -----------------------------------------------------------------------------
+#  Drop-in replacement for the automation
+#  "OpenDTU: Battery-First Aggressive EMS (Math-Based)".
+#
+#  GOALS
+#   1) BATTERY FIRST: the array may produce everything the house load plus the
+#      battery charge power needs. The target is computed from the wattage the
+#      battery can still take, never from the momentary export, so a Victron
+#      that is still ramping up (or a load switching off, or a lagging meter)
+#      can no longer ratchet the array down while the battery still has charge
+#      headroom - that was the "solar is cut even though the battery could take
+#      it" failure of 1.4.x. The real charge limit is DVCC / BMS CCL.
+#   2) never export: the grid is held at a small import bias (+20 W by default).
+#      If the battery cannot take the offered power (BMS current limit, CV
+#      phase, cold pack, ESS ramping) the loop LEARNS the real acceptance
+#      ("EMS charge allowance") after "EMS export grace" and works at that
+#      level from then on, and it probes upwards again by itself. See NOTES L.
+#   3) FAIL-SAFE:
+#        - battery monitoring gone  -> NO_BATTERY  mode = pure zero export
+#                                      (the charge-push term is dropped !)
+#        - grid meter gone / frozen -> GRID_BLIND  mode = safe low limit
+#          (only when BOTH meters fail: the Shelly 3EM Pro is primary and the
+#           Victron smart meter sensor.smart_meter_electric_consumption_w is a
+#           live backup; if they disagree the more conservative value wins)
+#        - the loop stops writing   -> watchdog applies the fail-safe limit
+#   4) an inverter that is off (its limit entity is unavailable) is excluded
+#      from the capacity, so its share is redistributed to the remaining ones:
+#      they are driven to a higher percentage, up to 100 % each. An inverter
+#      that is still reachable but produces nothing is caught by the delivery
+#      check (sensor.ems_pv_delivery) and reported by the watchdog.
+#   5) the Victron needs several seconds to change the charge current, so the
+#      loop waits "EMS settle time" after every write and never increases the
+#      limit by more than "EMS max step" at once (decreases are immediate)
+#   6) if NO inverter is reachable (OpenDTU powered off, MQTT down, ids changed)
+#      the loop stops writing and reports DTU_BLIND instead of pretending to
+#      control something
+#   7) STARTING (just booted, waiting "EMS start grace" for the sensors and the
+#      ESS) and NIGHT (sun down, no PV) are normal standby states: nothing is
+#      written, nothing is alarmed, and the loop takes over by itself
+#
+#  INSTALL
+#   * save as  <config>/packages/opendtu_ems.yaml
+#   * configuration.yaml must contain:
+#         homeassistant:
+#           packages: !include_dir_named packages
+#   * restart Home Assistant
+#   * DISABLE the old automation - this file replaces it. Never let two
+#     automations write the inverter limits.
+#
+#  SECTIONS
+#   1) entity ids     2) helpers      3) sensors
+#   4) script (write) 5) control loop 6) watchdog / fail-safe
+#
+#  WIKI - the reasoning behind all of this, with diagrams:
+#   https://github.com/acdcnow/opendtu-ems/wiki
+#   (Architecture Concept Document, Software Design Document, Workflow Diagrams
+#    and the archived control law of 1.4.x and older)
+# =============================================================================
+
+
+# =============================================================================
+# 1) ENTITY IDS  -  EDIT HERE ONLY
+# -----------------------------------------------------------------------------
+#  Grid meter (both measure the same grid point):
+#     PRIMARY   sensor.shelly3mpro_total_active_power
+#     BACKUP    sensor.smart_meter_electric_consumption_w   (Victron smart meter)
+#     positive = import from the grid.
+#  Both are read every cycle. If the primary dies or freezes the backup is used
+#  automatically and sensor.ems_mode stays FULL. Only if BOTH are dead/stale does
+#  the system enter GRID_BLIND (fail-safe limit, export impossible). If both are
+#  alive but differ by more than "EMS meter tolerance" the SMALLER value (more
+#  export) is used, so a lying meter can never cause an export. The active
+#  source is visible as the "source" attribute of sensor.ems_grid_power.
+#  Solar (sum of the three micro inverters, from OpenDTU):
+#     sensor.solarleistung_gesamt
+#  Battery (Seplos BMS): SoC + SIGNED power (positive = charging !)
+#     sensor.serialbattery_seplos_ladestand
+#     sensor.serialbattery_seplos_leistung
+#  Inverter limits - RELATIVE (percent) on purpose:
+#     number.hm1500_limit_nonpersistent_relative   (1500 W)
+#     number.hms1600_a_limit_nonpersistent_relative (1600 W)
+#     number.hms1600_b_limit_nonpersistent_relative (1600 W)
+#
+#  Why percent? One value drives a 1500 W and two 1600 W inverters correctly,
+#  no "divide by 3" error, no per-model min/max problem. Relative limits also
+#  cannot exceed the inverter rating.
+#  If your OpenDTU only exposes *_limit_nonpersistent_absolute, then each
+#  inverter needs its own watt value and this file must be adapted.
+#
+#  If your battery power sensor is INVERTED (positive = discharging), the whole
+#  calculation is wrong. Verify: battery charging => sensor > 0.
+# =============================================================================
+
+
+# =============================================================================
+# 2) HELPERS (created automatically by this file)
+# =============================================================================
+input_boolean:
+  ems_enabled:
+    name: EMS enabled
+    icon: mdi:transmission-tower-export
+    initial: true
+  ems_simulate_battery_loss:
+    name: EMS test - simulate battery loss
+    icon: mdi:battery-off-outline
+  ems_verbose:
+    name: EMS verbose logging
+    icon: mdi:script-text-play-outline
+
+input_number:
+  # -1 = manual override off. 0..100 = write this percentage to all inverters.
+  ems_manual_pct:
+    name: EMS manual limit
+    min: -1
+    max: 100
+    step: 1
+    mode: box
+    unit_of_measurement: "%"
+    icon: mdi:hand-back-right-outline
+  # small import bias so that we never sit exactly on the export boundary
+  ems_grid_bias:
+    name: EMS grid bias
+    min: 0
+    max: 200
+    step: 5
+    mode: box
+    unit_of_measurement: W
+    icon: mdi:transmission-tower
+  # only write when the percentage changes by at least this much
+  ems_hysteresis_pct:
+    name: EMS hysteresis
+    min: 0
+    max: 10
+    step: 0.5
+    mode: box
+    unit_of_measurement: "%"
+    icon: mdi:water-percent
+  # max charge power of the battery in W (50 A x ~50 V).
+  # BETTER: derive it:  min(50, CCL) * battery voltage
+  ems_max_charge_power:
+    name: EMS max charge power
+    min: 0
+    max: 6000
+    step: 100
+    mode: box
+    unit_of_measurement: W
+    icon: mdi:battery-charging-high
+  # Hard stop for the charge offer: at or above this SoC the EMS stops asking
+  # the array for charge power and only covers the house load. 100 = never.
+  # It counts only while the battery is really NOT charging, so a wrong or
+  # stuck SoC value can never cut the array down - that is the job of the
+  # charge allowance below (NOTES L).
+  ems_soc_stop:
+    name: EMS SoC stop charging
+    min: 80
+    max: 100
+    step: 1
+    mode: box
+    unit_of_measurement: "%"
+    icon: mdi:battery-check-outline
+  # The charge power the battery has been OBSERVED to accept, in watts.
+  # The control loop lowers it when a lasting export shows that the battery is
+  # not taking what it is offered, resets it to "EMS max charge power" whenever
+  # the battery discharges, and probes upwards again when there is no export.
+  # This is what keeps the array working at the battery's real acceptance
+  # instead of at a value the battery cannot use (NOTES L).
+  ems_charge_allowance:
+    name: EMS charge allowance
+    min: 0
+    max: 6000
+    step: 50
+    mode: box
+    unit_of_measurement: W
+    icon: mdi:battery-sync-outline
+  # An export up to this many watts is tolerated: meter noise, the Victron ramp
+  # and the upward probe all live in this band. Nothing is curtailed and no
+  # allowance is cut inside it.
+  ems_export_tolerance:
+    name: EMS export tolerance
+    min: 0
+    max: 1000
+    step: 10
+    mode: box
+    unit_of_measurement: W
+    icon: mdi:transmission-tower-off
+  # An export above the tolerance that lasts longer than this counts as proof
+  # that the battery cannot take the offered charge power -> the allowance is
+  # reduced. Give the Victron room: it needs seconds to minutes to ramp.
+  ems_export_grace:
+    name: EMS export grace
+    min: 0
+    max: 600
+    step: 15
+    mode: box
+    unit_of_measurement: s
+    icon: mdi:timer-alert-outline
+  # internal counter: consecutive 15 s ticks with an export above the tolerance
+  # (the loop heartbeat). Do not change manually - use "EMS export grace".
+  ems_export_ticks:
+    name: EMS export ticks
+    min: 0
+    max: 99
+    step: 1
+    mode: box
+    icon: mdi:counter
+  # after this long without an export the allowance is probed upwards again, so
+  # a battery that freed up (BMS released the current limit, pack warmed up,
+  # CV phase over) is charged at full power again by itself
+  ems_reprobe_seconds:
+    name: EMS charge re-probe
+    min: 60
+    max: 3600
+    step: 60
+    mode: box
+    unit_of_measurement: s
+    icon: mdi:arrow-up-bold-outline
+  # GRID_BLIND mode / watchdog: 0 % stops the inverters (export impossible).
+  # Raise to 2 % if your inverters become unstable at 0 %.
+  ems_failsafe_pct:
+    name: EMS fail-safe limit
+    min: 0
+    max: 100
+    step: 1
+    mode: box
+    unit_of_measurement: "%"
+    icon: mdi:shield-alert-outline
+  # allowed difference between the two grid meters before the more conservative
+  # one is used. Small permanent offsets (metering point, tolerance) are normal.
+  ems_meter_tolerance:
+    name: EMS meter tolerance
+    min: 0
+    max: 1000
+    step: 10
+    mode: box
+    unit_of_measurement: W
+    icon: mdi:scale-balance
+  # Victron ramp: after every write the loop waits this long before it acts
+  # again, so it does not chase an ESS that is still ramping. Keep it below the
+  # 15 s heartbeat, otherwise corrections wait for the next heartbeat.
+  ems_settle_seconds:
+    name: EMS settle time
+    min: 0
+    max: 120
+    step: 1
+    mode: box
+    unit_of_measurement: s
+    icon: mdi:timer-sand
+  # maximum increase of the limit per write, in percent of the total capacity.
+  # Prevents an export burst while the ESS has not started charging yet.
+  ems_max_step_pct:
+    name: EMS max step
+    min: 1
+    max: 100
+    step: 1
+    mode: box
+    unit_of_measurement: "%"
+    icon: mdi:stairs-up
+  # internal counter for the delivery check (consecutive short readings).
+  # Do not change manually unless you want to silence the notification.
+  ems_delivery_short:
+    name: EMS delivery short count
+    min: 0
+    max: 9
+    step: 1
+    mode: box
+    icon: mdi:counter
+  # after a Home Assistant start nothing is written for this long, so the
+  # sensors can deliver their first values and the ESS can finish booting.
+  # Raise it if your Victron needs longer than 2 minutes to come up.
+  ems_start_grace:
+    name: EMS start grace
+    min: 0
+    max: 900
+    step: 10
+    mode: box
+    unit_of_measurement: s
+    icon: mdi:timer-play-outline
+
+input_datetime:
+  ems_last_apply:
+    name: EMS last limit write
+    has_date: true
+    has_time: true
+  # written by automation.opendtu_ems_boot at every Home Assistant start
+  ems_started_at:
+    name: EMS started at
+    has_date: true
+    has_time: true
+
+
+# =============================================================================
+# 3) SENSORS
+# =============================================================================
+template:
+  - sensor:
+      # --- resolved grid power ---------------------------------------------
+      # primary Shelly 3EM Pro, backup Victron smart meter. A meter counts as
+      # usable when it has a value and was updated in the last 5 minutes.
+      # Both alive + differing by more than the tolerance -> take the SMALLER
+      # value (the one showing more export): erring towards less PV can never
+      # cause an export. "source" shows what is in use.
+      - name: "EMS grid power"
+        unique_id: ems_grid_power
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        icon: mdi:transmission-tower
+        availability: >-
+          {%- set s = 'sensor.shelly3mpro_total_active_power' -%}
+          {%- set v = 'sensor.smart_meter_electric_consumption_w' -%}
+          {{- (has_value(s) and (now() - states[s].last_updated).total_seconds() < 300)
+              or (has_value(v) and (now() - states[v].last_updated).total_seconds() < 300) -}}
+        attributes:
+          source: >-
+            {%- set s = 'sensor.shelly3mpro_total_active_power' -%}
+            {%- set v = 'sensor.smart_meter_electric_consumption_w' -%}
+            {%- set tol = states('input_number.ems_meter_tolerance') | float(100) -%}
+            {%- set s_ok = has_value(s) and (now() - states[s].last_updated).total_seconds() < 300 -%}
+            {%- set v_ok = has_value(v) and (now() - states[v].last_updated).total_seconds() < 300 -%}
+            {%- if s_ok and v_ok -%}
+              {{- 'disagree' if (((states(s) | float(0)) - (states(v) | float(0))) | abs) > tol else 'shelly' -}}
+            {%- elif s_ok -%}shelly
+            {%- elif v_ok -%}victron
+            {%- else -%}none{%- endif -%}
+          shelly: "{{ states('sensor.shelly3mpro_total_active_power') }}"
+          victron: "{{ states('sensor.smart_meter_electric_consumption_w') }}"
+        state: >-
+          {%- set s = 'sensor.shelly3mpro_total_active_power' -%}
+          {%- set v = 'sensor.smart_meter_electric_consumption_w' -%}
+          {%- set tol = states('input_number.ems_meter_tolerance') | float(100) -%}
+          {%- set s_ok = has_value(s) and (now() - states[s].last_updated).total_seconds() < 300 -%}
+          {%- set v_ok = has_value(v) and (now() - states[v].last_updated).total_seconds() < 300 -%}
+          {%- set s_val = states(s) | float(0) -%}
+          {%- set v_val = states(v) | float(0) -%}
+          {%- set disagree = s_ok and v_ok and (((s_val - v_val) | abs) > tol) -%}
+          {%- set val = ([s_val, v_val] | min) if disagree else (s_val if s_ok else v_val) -%}
+          {{ val | round(0) | int(0) }}
+
+      # --- operating mode ---------------------------------------------------
+      #   OFF         kill switch off
+      #   STARTING    less than "EMS start grace" since Home Assistant started:
+      #               waiting for the first sensor values and for the ESS
+      #   NIGHT       sun down and no PV: standby, nothing to control
+      #   DTU_BLIND   no inverter entity readable at all (OpenDTU off, MQTT
+      #               down, ids changed) -> nothing to control, nothing written
+      #   GRID_BLIND  no usable grid reading or no solar reading inside the
+      #               control interval (both grid meters dead/stale, or the
+      #               OpenDTU power sensor gone) -> cannot compute the house
+      #               load -> fail-safe limit
+      #   NO_BATTERY  no usable battery data -> pure zero export (no charge push)
+      #   FULL        everything fresh -> house load + allowed charge power + bias
+      #               (also when only the BACKUP grid meter is available)
+      - name: "EMS mode"
+        unique_id: ems_mode
+        icon: mdi:state-machine
+        state: >-
+          {%- set soc = 'sensor.serialbattery_seplos_ladestand' -%}
+          {%- set bp = 'sensor.serialbattery_seplos_leistung' -%}
+          {#- one source of truth: sensor.ems_grid_power handles both meters
+              and is only unavailable when neither of them is usable -#}
+          {%- set grid_ok = has_value('sensor.ems_grid_power') -%}
+          {%- set solar_ok = has_value('sensor.solarleistung_gesamt') -%}
+          {#- the capacity sensor is 0 when no inverter limit entity is readable -#}
+          {%- set cap = states('sensor.ems_inverter_capacity') | float(0) -%}
+          {#- sun down and no PV: the inverters sleep, nothing to do -#}
+          {%- set night = is_state('sun.sun', 'below_horizon')
+                          and (states('sensor.solarleistung_gesamt') | float(0)) < 200 -%}
+          {#- after a Home Assistant start: wait before touching anything -#}
+          {%- set started = state_attr('input_datetime.ems_started_at', 'timestamp') | float(0) -%}
+          {%- set starting = started > 0
+                            and (now().timestamp() - started)
+                                < (states('input_number.ems_start_grace') | float(120)) -%}
+          {%- set batt_ok = has_value(soc) and has_value(bp)
+                            and (states(soc) | float(-1)) >= 0 and (states(soc) | float(-1)) <= 100
+                            and (now() - states[bp].last_updated).total_seconds() < 120
+                            and (now() - states[soc].last_updated).total_seconds() < 300 -%}
+          {%- if not is_state('input_boolean.ems_enabled', 'on') -%}OFF
+          {%- elif starting -%}STARTING
+          {%- elif night -%}NIGHT
+          {%- elif cap == 0 -%}DTU_BLIND
+          {%- elif not solar_ok or not grid_ok -%}GRID_BLIND
+          {%- elif not batt_ok or is_state('input_boolean.ems_simulate_battery_loss', 'on') -%}NO_BATTERY
+          {%- else -%}FULL{%- endif -%}
+
+      # --- inverter capacity / redistribution -------------------------------
+      # An inverter whose limit entity is unavailable (offline, radio lost) is
+      # excluded here, so its share goes to the remaining inverters: they are
+      # driven to a higher percentage (up to 100 % each) for the same total.
+      # "active" and "current_pct" expose what the loop actually sees.
+      - name: "EMS inverter capacity"
+        unique_id: ems_inverter_capacity
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        icon: mdi:solar-power-variant
+        attributes:
+          active: >-
+            {{- expand(['number.hm1500_limit_nonpersistent_relative',
+                        'number.hms1600_a_limit_nonpersistent_relative',
+                        'number.hms1600_b_limit_nonpersistent_relative'])
+                | map(attribute='state') | map('float', -1)
+                | select('>=', 0) | list | count -}}
+          current_pct: >-
+            {{- expand(['number.hm1500_limit_nonpersistent_relative',
+                        'number.hms1600_a_limit_nonpersistent_relative',
+                        'number.hms1600_b_limit_nonpersistent_relative'])
+                | map(attribute='state') | map('float', -1)
+                | select('>=', 0) | first | default(-1) -}}
+        state: >-
+          {%- set caps = {'number.hm1500_limit_nonpersistent_relative': 1500,
+                          'number.hms1600_a_limit_nonpersistent_relative': 1600,
+                          'number.hms1600_b_limit_nonpersistent_relative': 1600} -%}
+          {%- set ns = namespace(cap=0) -%}
+          {%- for e, c in caps.items() if has_value(e) -%}
+            {%- set ns.cap = ns.cap + c -%}
+          {%- endfor -%}
+          {{ ns.cap }}
+
+      # --- PV delivery check -------------------------------------------------
+      # expected output = commanded percentage x reachable capacity.
+      # A ratio well below 100 % while the sun is up means an inverter does not
+      # deliver although its limit entity is available - it is offline, shaded,
+      # or sitting on its own persistent limit. Availability alone cannot see
+      # that. The ratio is forced to 100 % below 300 W expected output so that
+      # low light or a low limit does not raise false alarms.
+      - name: "EMS PV delivery"
+        unique_id: ems_pv_delivery
+        unit_of_measurement: "%"
+        icon: mdi:chart-bell-curve-cumulative
+        attributes:
+          expected_w: >-
+            {{- (states('sensor.ems_limit_target') | float(0) / 100
+                 * states('sensor.ems_inverter_capacity') | float(0)) | round(0) -}}
+          actual_w: "{{ states('sensor.solarleistung_gesamt') }}"
+        state: >-
+          {%- set cap = states('sensor.ems_inverter_capacity') | float(0) -%}
+          {%- set exp = states('sensor.ems_limit_target') | float(0) / 100
+                        * states('sensor.ems_inverter_capacity') | float(0) -%}
+          {%- set act = states('sensor.solarleistung_gesamt') | float(0) -%}
+          {%- if cap == 0 -%}0
+          {%- elif exp < 300 -%}100
+          {%- else -%}{{ ((act / exp) * 100) | round(0) }}{%- endif -%}
+
+      # --- house load --------------------------------------------------------
+      # From the energy balance at the metering point (grid + solar = load +
+      # battery charge) the house load is  solar + grid - battery_power, with
+      # battery_power signed (positive = charging). Handy for energy flow cards
+      # and as a sanity check: if this value ever looks odd, one of the three
+      # measurements is wrong.
+      - name: "EMS house load"
+        unique_id: ems_house_load
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        icon: mdi:home-lightning-bolt-outline
+        availability: >-
+          {{- has_value('sensor.ems_grid_power')
+              and has_value('sensor.solarleistung_gesamt')
+              and has_value('sensor.serialbattery_seplos_leistung') -}}
+        state: >-
+          {%- set grid = states('sensor.ems_grid_power') | float(0) -%}
+          {%- set solar = states('sensor.solarleistung_gesamt') | float(0) -%}
+          {%- set bat = states('sensor.serialbattery_seplos_leistung') | float(0) -%}
+          {{ (solar + grid - bat) | round(0) | int(0) }}
+
+      # --- limit percentage to write (single source of truth) ---------------
+      # BATTERY FIRST - and never on the back of a momentary export:
+      #   FULL        PV = house load + battery charge power + bias
+      #                  = solar + grid + (allowance - battery power) + bias
+      #               "allowance" = min(EMS max charge power, EMS charge
+      #               allowance): the configured maximum, capped by the power
+      #               the battery has been OBSERVED to accept. The measured
+      #               export does not appear in this formula, so a Victron that
+      #               is still ramping, a load switching off or a lagging meter
+      #               can no longer curtail the array. The array is only cut
+      #               when the battery really cannot take the power - which is
+      #               what the allowance learning in the control loop detects
+      #               (NOTES section L).
+      #   NO_BATTERY  PV = house load + battery + bias (= solar + grid + bias)
+      #   GRID_BLIND  fail-safe percentage             (export impossible)
+      # The SoC stops the charge offer only at "EMS SoC stop charging" AND only
+      # while the battery is really not charging, so a wrong or stuck SoC value
+      # can never cut the array down.
+      # Increases are rate limited ("EMS max step") so the array does not run
+      # ahead of the ESS; decreases are applied immediately (less PV can never
+      # cause an export).
+      - name: "EMS limit target"
+        unique_id: ems_limit_target
+        unit_of_measurement: "%"
+        icon: mdi:speedometer
+        attributes:
+          mode: "{{ states('sensor.ems_mode') }}"
+          grid: "{{ states('sensor.ems_grid_power') }}"
+          solar: "{{ states('sensor.solarleistung_gesamt') }}"
+          active: "{{ state_attr('sensor.ems_inverter_capacity', 'active') }}"
+          capacity: "{{ states('sensor.ems_inverter_capacity') }}"
+          # what the battery is allowed to take right now (display only)
+          allowance: >-
+            {{- [states('input_number.ems_max_charge_power') | float(2500),
+                 states('input_number.ems_charge_allowance') | float(2500)]
+                | min | round(0) | int(0) -}}
+          # how much charge power the state above asks the array for
+          charge_push: >-
+            {%- set allow = [states('input_number.ems_max_charge_power') | float(2500),
+                             states('input_number.ems_charge_allowance') | float(2500)] | min -%}
+            {%- set soc = states('sensor.serialbattery_seplos_ladestand') | float(0) -%}
+            {%- set bat = states('sensor.serialbattery_seplos_leistung') | float(0) -%}
+            {%- set tol = states('input_number.ems_export_tolerance') | float(150) -%}
+            {%- set stop = (states('sensor.ems_mode') == 'FULL'
+                            and soc >= (states('input_number.ems_soc_stop') | float(100))
+                            and bat < tol) -%}
+            {{ 0 if stop else ([allow - bat, 0] | max | round(0) | int(0)) }}
+        state: >-
+          {%- set cap = states('sensor.ems_inverter_capacity') | float(0) -%}
+          {%- set cur = state_attr('sensor.ems_inverter_capacity', 'current_pct') | float(-1) -%}
+          {%- set mode = states('sensor.ems_mode') -%}
+          {%- set manual = states('input_number.ems_manual_pct') | float(-1) -%}
+          {%- set grid = states('sensor.ems_grid_power') | float(0) -%}
+          {%- set solar = states('sensor.solarleistung_gesamt') | float(0) -%}
+          {%- set bias = states('input_number.ems_grid_bias') | float(20) -%}
+          {%- if manual >= 0 -%}
+            {{ [manual, 100] | min }}
+          {%- elif mode in ['GRID_BLIND', 'OFF'] or cap == 0 -%}
+            {{ states('input_number.ems_failsafe_pct') | float(0) }}
+          {%- else -%}
+            {%- set push = namespace(w=0) -%}
+            {%- if mode == 'FULL' -%}
+              {%- set soc = states('sensor.serialbattery_seplos_ladestand') | float(0) -%}
+              {%- set bat = states('sensor.serialbattery_seplos_leistung') | float(0) -%}
+              {%- set cmax = states('input_number.ems_max_charge_power') | float(2500) -%}
+              {%- set tol = states('input_number.ems_export_tolerance') | float(150) -%}
+              {#- the offer: configured maximum, capped by what the battery has
+                  been observed to accept (EMS charge allowance) -#}
+              {%- set allow = [cmax, states('input_number.ems_charge_allowance')
+                                     | float(cmax)] | min -%}
+              {#- SoC stop, honoured only while the battery really takes nothing,
+                  so a wrong SoC cannot cut the array -#}
+              {%- set stopped = soc >= (states('input_number.ems_soc_stop') | float(100))
+                                and bat < tol -%}
+              {%- set push.w = 0 if stopped else [allow - bat, 0] | max -%}
+            {%- endif -%}
+            {%- set target = [[solar + grid + push.w + bias, 0] | max, cap] | min -%}
+            {%- set pct = target / cap * 100 -%}
+            {%- set step = states('input_number.ems_max_step_pct') | float(10) -%}
+            {%- if cur >= 0 and pct > cur -%}
+              {{ [pct, cur + step] | min | round(1) }}
+            {%- else -%}
+              {{ pct | round(1) }}
+            {%- endif -%}
+          {%- endif -%}
+
+  - binary_sensor:
+      # on when running degraded: any non-FULL mode, or when the grid reading
+      # comes from the backup meter / the two meters disagree.
+      # STARTING, NIGHT and OFF are normal states, not a problem.
+      - name: "EMS degraded"
+        unique_id: ems_degraded
+        device_class: problem
+        icon: mdi:alert-outline
+        state: >-
+          {{- states('sensor.ems_mode') not in ['FULL', 'OFF', 'NIGHT', 'STARTING']
+              or state_attr('sensor.ems_grid_power', 'source') != 'shelly' -}}
+
+
+# =============================================================================
+# 4) SCRIPT - write the limits (atomic, per-inverter error tolerant)
+# =============================================================================
+script:
+  ems_apply:
+    alias: "EMS: write inverter limits"
+    mode: restart
+    fields:
+      pct:
+        name: Limit
+        description: Limit in percent (0-100). Defaults to the EMS limit target sensor.
+        required: false
+        selector:
+          number:
+            min: 0
+            max: 100
+            step: 0.5
+            mode: box
+    variables:
+      value: >-
+        {{- pct | default(states('sensor.ems_limit_target'), true) | float(0) | round(1) -}}
+    sequence:
+      # heartbeat first: the watchdog must not fire because of a slow DTU
+      - action: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.ems_last_apply
+        data:
+          timestamp: "{{ now().timestamp() }}"
+      # all three in parallel - no 1 s delays, no half-written state
+      - parallel:
+          - action: number.set_value
+            target:
+              entity_id: number.hm1500_limit_nonpersistent_relative
+            data:
+              value: "{{ value }}"
+            continue_on_error: true
+          - action: number.set_value
+            target:
+              entity_id: number.hms1600_a_limit_nonpersistent_relative
+            data:
+              value: "{{ value }}"
+            continue_on_error: true
+          - action: number.set_value
+            target:
+              entity_id: number.hms1600_b_limit_nonpersistent_relative
+            data:
+              value: "{{ value }}"
+            continue_on_error: true
+
+
+# =============================================================================
+# 5) CONTROL LOOP - event driven, with a slow heartbeat
+# =============================================================================
+automation:
+  - id: opendtu_ems_loop
+    alias: "OpenDTU EMS loop"
+    description: >-
+      Battery first: allows the three micro inverters to produce what the house
+      load plus the battery charge power needs, and caps the offer at the charge
+      power the battery has been observed to accept, so the array is never cut
+      while the battery can still take the energy. Degrades to pure zero export
+      when battery data is missing. Also learns the real charge acceptance
+      ("EMS charge allowance") from a lasting export, and runs at night for that
+      (which is when the battery discharges and the estimate is reset).
+    mode: restart
+    max_exceeded: silent
+    triggers:
+      - trigger: homeassistant
+        event: start
+      # react the moment the grid leaves the +/- band (no 20 s polling)
+      - trigger: numeric_state
+        entity_id: sensor.shelly3mpro_total_active_power
+        below: -30
+        for: "00:00:05"
+      - trigger: numeric_state
+        entity_id: sensor.shelly3mpro_total_active_power
+        above: 60
+        for: "00:00:05"
+      - trigger: numeric_state
+        entity_id: sensor.smart_meter_electric_consumption_w
+        below: -30
+        for: "00:00:05"
+      - trigger: numeric_state
+        entity_id: sensor.smart_meter_electric_consumption_w
+        above: 60
+        for: "00:00:05"
+      # slow heartbeat for drift and for re-asserting the non-persistent limit
+      - trigger: time_pattern
+        seconds: "/15"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.ems_enabled
+        state: "on"
+      # nothing to control while Home Assistant is still booting or while no
+      # inverter entity is readable - writing would only produce error logs,
+      # and the watchdog reports those states separately.
+      # NIGHT is deliberately NOT filtered here: the loop still learns the
+      # battery's charge acceptance at night (that is when the battery
+      # discharges and the estimate is reset) and stops before writing.
+      - condition: template
+        value_template: >-
+          {{ states('sensor.ems_mode') not in ['STARTING', 'DTU_BLIND'] }}
+    actions:
+      # =====================================================================
+      # snapshot: what the EMS wants right now, taken BEFORE the allowance is
+      # updated below, so the write and the gate always work on the same value
+      # =====================================================================
+      - variables:
+          target_pct: "{{ states('sensor.ems_limit_target') }}"
+      # =====================================================================
+      # charge acceptance learning - "how much charge power can the battery
+      # really take?"  All of this is measurement driven, nothing is written to
+      # the inverters, and it runs in FULL and in NIGHT. See NOTES section L.
+      # =====================================================================
+      - variables:
+          lrn_ok: >-
+            {{- states('input_number.ems_manual_pct') | float(-1) < 0
+                and states('sensor.ems_mode') in ['FULL', 'NIGHT']
+                and has_value('sensor.serialbattery_seplos_leistung')
+                and has_value('input_number.ems_charge_allowance') -}}
+          lrn_full: "{{ states('sensor.ems_mode') == 'FULL' }}"
+          lrn_bat: "{{ states('sensor.serialbattery_seplos_leistung') | float(0) }}"
+          lrn_grid: "{{ states('sensor.ems_grid_power') | float(0) }}"
+          lrn_tol: "{{ states('input_number.ems_export_tolerance') | float(150) }}"
+          lrn_cmax: "{{ states('input_number.ems_max_charge_power') | float(2500) }}"
+          lrn_allow: "{{ states('input_number.ems_charge_allowance') | float(2500) }}"
+          lrn_ticks: "{{ states('input_number.ems_export_ticks') | float(0) }}"
+          lrn_exporting: >-
+            {{- (states('sensor.ems_grid_power') | float(0))
+                < -1 * (states('input_number.ems_export_tolerance') | float(150)) -}}
+          # a lasting export is required before it counts: "EMS export grace"
+          # seconds, counted in 15 s ticks (the heartbeat of this loop)
+          lrn_needed: >-
+            {{- [((states('input_number.ems_export_grace') | float(60)) / 15)
+                 | round(0, 'ceil') | int(0), 1] | max -}}
+          # no export since "EMS charge re-probe" -> try a higher allowance
+          lrn_quiet: >-
+            {%- if has_value('input_number.ems_charge_allowance') -%}
+              {{- (now() - states.input_number.ems_charge_allowance.last_changed)
+                  .total_seconds()
+                  >= (states('input_number.ems_reprobe_seconds') | float(900)) -}}
+            {%- else -%}false{%- endif -%}
+      # 1) the array exports although the battery still has charge headroom ->
+      #    the battery is not taking what it is offered: remember the measured
+      #    acceptance, so the array stops exporting at THAT level instead of
+      #    being cut back to the house load (which is what starved the battery)
+      - if:
+          - condition: template
+            value_template: "{{ lrn_ok and lrn_full and lrn_exporting }}"
+        then:
+          - if:
+              - condition: template
+                value_template: >-
+                  {{- lrn_ticks + 1 >= lrn_needed
+                      and (lrn_allow - lrn_bat) > lrn_tol -}}
+            then:
+              # at most a 50 % cut per step and never below what the battery is
+              # measurably taking: one bad reading cannot stop the charge, and
+              # the step is repeated until the export is gone
+              - variables:
+                  lrn_new: >-
+                    {{- [[lrn_allow, [lrn_bat, lrn_allow / 2] | max] | min, 0]
+                        | max | round(0) | int(0) -}}
+              - action: system_log.write
+                data:
+                  level: warning
+                  logger: opendtu.zero_export
+                  message: >-
+                    CHARGE ALLOWANCE: {{ lrn_allow }} W offered, battery takes
+                    {{ lrn_bat }} W, grid exports {{ lrn_grid }} W for more than
+                    {{ states('input_number.ems_export_grace') }} s
+                    -> allowance limited to {{ lrn_new }} W
+              - action: input_number.set_value
+                target:
+                  entity_id: input_number.ems_charge_allowance
+                data:
+                  value: "{{ lrn_new }}"
+              - action: input_number.set_value
+                target:
+                  entity_id: input_number.ems_export_ticks
+                data:
+                  value: 0
+            else:
+              - action: input_number.set_value
+                target:
+                  entity_id: input_number.ems_export_ticks
+                data:
+                  value: "{{ [lrn_ticks + 1, 99] | min | int(0) }}"
+      - if:
+          - condition: template
+            value_template: "{{ lrn_ok and not lrn_exporting and lrn_ticks > 0 }}"
+        then:
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_export_ticks
+            data:
+              value: 0
+      # 2) the battery discharges -> the old estimate is worthless, the next
+      #    charge starts at the configured maximum again (not while the array
+      #    is exporting: then the estimate below is the right answer)
+      - if:
+          - condition: template
+            value_template: >-
+              {{- lrn_ok and not lrn_exporting and (lrn_bat < -1 * lrn_tol)
+                  and lrn_allow < lrn_cmax - 1 -}}
+        then:
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_charge_allowance
+            data:
+              value: "{{ lrn_cmax | round(0) | int(0) }}"
+      # 3) no export for a while -> probe upwards: the BMS may have released
+      #    the current limit, the pack may be warmer, the CV phase may be over
+      - if:
+          - condition: template
+            value_template: >-
+              {{- lrn_ok and not lrn_exporting and (lrn_bat > -1 * lrn_tol)
+                  and lrn_allow < lrn_cmax - 1 and lrn_quiet -}}
+        then:
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_charge_allowance
+            data:
+              value: >-
+                {{- [lrn_cmax, [lrn_allow * 1.5, lrn_allow + 100] | max]
+                    | min | round(0) | int(0) -}}
+      # =====================================================================
+      # standby: at night there is nothing to write (the inverters sleep and
+      # their persistent limit is what they wake up with)
+      # =====================================================================
+      - if:
+          - condition: template
+            value_template: "{{ states('sensor.ems_mode') == 'NIGHT' }}"
+        then:
+          - stop: "standby (night) - nothing written"
+      # =====================================================================
+      # write, with hysteresis + Victron settle time: only if the value really
+      # changed, or if the last write is older than 3 minutes (non-persistent
+      # limits can expire). A real export bypasses the settle time.
+      # =====================================================================
+      - if:
+          - condition: template
+            value_template: >-
+              {%- set manual = states('input_number.ems_manual_pct') | float(-1) -%}
+              {%- set cur = state_attr('sensor.ems_inverter_capacity', 'current_pct') | float(-1) -%}
+              {%- set new = target_pct | float(-1) -%}
+              {%- set hyst = states('input_number.ems_hysteresis_pct') | float(2) -%}
+              {%- set settle = states('input_number.ems_settle_seconds') | float(12) -%}
+              {%- set last = state_attr('input_datetime.ems_last_apply', 'timestamp') | float(0) -%}
+              {%- set idle = now().timestamp() - last -%}
+              {%- set refresh = last == 0 or idle > 180 -%}
+              {%- set emergency = (states('sensor.ems_grid_power') | float(0)) < -500 -%}
+              {%- set changed = new < 0 or cur < 0 or ((cur - new) | abs >= hyst) -%}
+              {{ new >= 0 and
+                 (manual >= 0 or refresh or (changed and (idle >= settle or emergency))) }}
+        then:
+          - if:
+              - condition: state
+                entity_id: input_boolean.ems_verbose
+                state: "on"
+            then:
+              - action: system_log.write
+                data:
+                  level: debug
+                  logger: opendtu.zero_export
+                  message: >-
+                    {{ states('sensor.ems_mode') }} |
+                    grid {{ states('sensor.ems_grid_power') }}W
+                    [{{ state_attr('sensor.ems_grid_power', 'source') }}] |
+                    solar {{ states('sensor.solarleistung_gesamt') }}W |
+                    SoC {{ states('sensor.serialbattery_seplos_ladestand') }}% |
+                    bat {{ states('sensor.serialbattery_seplos_leistung') }}W |
+                    inv {{ state_attr('sensor.ems_inverter_capacity', 'active') }}/3
+                    cap {{ states('sensor.ems_inverter_capacity') }}W |
+                    limit {{ target_pct }}%
+          - action: script.ems_apply
+            data:
+              pct: "{{ target_pct }}"
+
+
+# =============================================================================
+# 6) WATCHDOG - detects "the loop stopped writing" and applies the fail-safe
+# =============================================================================
+  - id: opendtu_ems_watchdog
+    alias: "OpenDTU EMS watchdog"
+    description: >-
+      If the control loop has not written a limit for longer than the timeout,
+      the inverters are set to the fail-safe limit and a notification is raised.
+      The fail-safe write also refreshes the heartbeat, so the alarm is not
+      repeated every cycle. It also reports a capacity shortfall, i.e. when the
+      reachable inverters already run at 100 % and the grid still imports - a
+      sign that one inverter is offline or that a big load is running.
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: time_pattern
+        minutes: "/2"
+      - trigger: homeassistant
+        event: start
+    conditions:
+      - condition: state
+        entity_id: input_boolean.ems_enabled
+        state: "on"
+      # never fight the manual override
+      - condition: template
+        value_template: "{{ states('input_number.ems_manual_pct') | float(-1) < 0 }}"
+    actions:
+      # last_ts == 0 means "never written yet" -> the loop writes within 30 s,
+      # so this is not treated as stale (avoids a spurious alarm after boot).
+      # The mode must also have been stable for the timeout: without that, the
+      # first run after the NIGHT -> FULL transition could fire, because the
+      # loop never writes at night.
+      - variables:
+          last_ts: "{{ state_attr('input_datetime.ems_last_apply', 'timestamp') | float(0) }}"
+          timeout: "{{ 300 }}"
+          stale: >-
+            {{- last_ts > 0 and (now().timestamp() - last_ts) > timeout
+                and states('sensor.ems_mode') not in ['STARTING', 'NIGHT', 'DTU_BLIND']
+                and (now() - states.sensor.ems_mode.last_changed).total_seconds() > timeout -}}
+      - if:
+          - condition: template
+            value_template: "{{ stale }}"
+        then:
+          - action: system_log.write
+            data:
+              level: warning
+              logger: opendtu.zero_export
+              message: >-
+                WATCHDOG: no limit written for more than {{ timeout }} s
+                (last write {{ last_ts | timestamp_local }}). Applying fail-safe
+                limit {{ states('input_number.ems_failsafe_pct') }}%.
+          - action: persistent_notification.create
+            data:
+              title: OpenDTU EMS fail-safe active
+              notification_id: opendtu_ems_failsafe
+              message: >-
+                The EMS control loop stopped writing inverter limits.
+                The inverters were set to the fail-safe limit
+                ({{ states('input_number.ems_failsafe_pct') }} %) so that no
+                energy is exported. Last write: {{ last_ts | timestamp_local }}.
+                Check the EMS automations and sensor.ems_mode.
+          - action: script.ems_apply
+            data:
+              pct: "{{ states('input_number.ems_failsafe_pct') | float(0) }}"
+      # capacity shortfall: fewer than 3 inverters reachable, they already run
+      # at 100 % and the grid still imports while PV is being produced
+      - if:
+          - condition: template
+            value_template: >-
+              {{- (state_attr('sensor.ems_inverter_capacity', 'active') | int(0)) > 0
+                  and (state_attr('sensor.ems_inverter_capacity', 'active') | int(3)) < 3
+                  and (state_attr('sensor.ems_inverter_capacity', 'current_pct') | float(0)) >= 99.5
+                  and (states('sensor.ems_grid_power') | float(0)) > 200
+                  and (states('sensor.solarleistung_gesamt') | float(0)) > 200 -}}
+        then:
+          - action: persistent_notification.create
+            data:
+              title: OpenDTU EMS - PV capacity short
+              notification_id: opendtu_ems_capacity
+              message: >-
+                Only {{ state_attr('sensor.ems_inverter_capacity', 'active') }} of
+                3 micro inverters are reachable and the remaining ones already run
+                at {{ state_attr('sensor.ems_inverter_capacity', 'current_pct') }} %.
+                The grid still imports {{ states('sensor.ems_grid_power') }} W while
+                PV is producing {{ states('sensor.solarleistung_gesamt') }} W, so the
+                reachable capacity cannot cover load + charging. Check the missing
+                inverter in OpenDTU, or accept the shortfall.
+      # no inverter reachable at all: OpenDTU off, MQTT down or ids changed
+      - if:
+          - condition: template
+            value_template: >-
+              {{- states('sensor.ems_mode') == 'DTU_BLIND'
+                  and is_state('input_boolean.ems_enabled', 'on') -}}
+        then:
+          - action: persistent_notification.create
+            data:
+              title: OpenDTU EMS - no inverter reachable
+              notification_id: opendtu_ems_dtu
+              message: >-
+                None of the inverter limit entities is readable, so the EMS cannot
+                control anything and writes nothing. OpenDTU is probably powered
+                off, the MQTT connection is down, or the entity ids in section 1 of
+                the package changed. Grid and battery sensors are not affected.
+                The loop resumes by itself as soon as an inverter is reachable.
+      # under-delivery: the inverters are commanded to more than they deliver,
+      # even though the grid still imports. Counted over consecutive runs so
+      # that a passing cloud does not raise an alarm.
+      - if:
+          - condition: template
+            value_template: >-
+              {{- (states('sensor.ems_pv_delivery') | float(100)) < 70
+                  and ((state_attr('sensor.ems_pv_delivery', 'expected_w') | float(0))
+                       - (states('sensor.solarleistung_gesamt') | float(0))) > 800
+                  and (state_attr('sensor.ems_pv_delivery', 'expected_w') | float(0)) > 500
+                  and (states('sensor.solarleistung_gesamt') | float(0)) > 200
+                  and (states('sensor.ems_grid_power') | float(0)) > 0 -}}
+        then:
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_delivery_short
+            data:
+              value: >-
+                {{ [states('input_number.ems_delivery_short') | float(0) + 1, 9] | min | int(0) }}
+        else:
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_delivery_short
+            data:
+              value: 0
+      # notify exactly once per episode (counter reaches 3 = ~6 minutes)
+      - if:
+          - condition: template
+            value_template: "{{ states('input_number.ems_delivery_short') | float(0) == 3 }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              title: OpenDTU EMS - PV under-delivering
+              notification_id: opendtu_ems_delivery
+              message: >-
+                The inverters have been commanded to about
+                {{ state_attr('sensor.ems_pv_delivery', 'expected_w') }} W for more
+                than 6 minutes but only produce
+                {{ states('sensor.solarleistung_gesamt') }} W
+                ({{ states('sensor.ems_pv_delivery') }} %), while the grid still
+                imports {{ states('sensor.ems_grid_power') }} W.
+                Either an inverter does not deliver (offline, shaded, stuck on a low
+                persistent limit) - check "reachable"/"producing" for each inverter
+                in OpenDTU - or it is simply heavily clouded. The notification
+                repeats only after the output recovers.
+
+
+# =============================================================================
+# 7) STARTUP MARKER - lets the loop stay in STARTING after a restart
+# =============================================================================
+  - id: opendtu_ems_boot
+    alias: "OpenDTU EMS boot"
+    description: >-
+      Records the Home Assistant start time. sensor.ems_mode stays STARTING for
+      "EMS start grace" seconds afterwards, so that neither half-initialised
+      sensors nor an ESS that is still booting can cause a wrong limit write.
+    mode: single
+    triggers:
+      - trigger: homeassistant
+        event: start
+    actions:
+      - action: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.ems_started_at
+        data:
+          timestamp: "{{ now().timestamp() }}"
+      - action: system_log.write
+        data:
+          level: info
+          logger: opendtu.zero_export
+          message: >-
+            STARTUP: waiting {{ states('input_number.ems_start_grace') }} s before
+            the first inverter write.
+
+
+# =============================================================================
+# NOTES
+# -----------------------------------------------------------------------------
+# A) CHARGE SPEED is not decided by this file. The Victron charges at
+#    min(DVCC max charge current, BMS CCL, ESS limits). Make sure DVCC is set to
+#    50 A and that the battery's CCL is not the bottleneck. Better than
+#    "EMS max charge power": derive it from
+#        min(50, states('sensor.<ccl>') | float(50)) * states('sensor.<voltage>') | float(52)
+#
+# B) HARDWARE BACKSTOP - set a LOW PERSISTENT limit for all three inverters in
+#    the OpenDTU web UI (Inverter -> Limit). The persistent limit is what the
+#    inverter falls back to whenever no non-persistent limit is in force:
+#    inverter reboot, DTU offline, expired limit. Without it, "no export"
+#    depends on software that is currently running.
+#    Known issue: Hoymiles firmware 2.0.4 reports 100 % after ~4 minutes without
+#    a limit update. Avoid 2.0.4 (1.1.12 recommended). The 180 s re-assert in
+#    the control loop is there for exactly that case.
+#
+# C) WHAT THIS FILE FIXES compared to the old script
+#    - no charge push while exporting  (the old "+deficit" could force export)
+#    - signed battery power (discharge no longer breaks the target)
+#    - one percentage for 1500 W + 2x 1600 W (no wrong "/3", no 1600 W on a
+#      1500 W unit, no 10 W below the stable minimum)
+#    - degraded modes: battery data lost -> zero export, grid data lost -> safe
+#    - watchdog for "the loop silently stopped"
+#    - parallel writes (no 2 s of mismatched limits, no half-written state)
+#    - ~99 % fewer writes: acts on crossings plus hysteresis, not every 20 s
+#    1.5.0 replaced two things that starved the battery in 1.4.x:
+#    - the SoC taper (from 90 %, 0 % at 99 % SoC) reduced the array BEFORE the
+#      battery was full and stopped it completely at 99 %: with a Seplos that
+#      reports 99 % while still in the CV phase the array was cut to the house
+#      load and the battery never finished charging. Removed. The SoC now only
+#      STOPS the charge offer ("EMS SoC stop charging", 100 % = never) and only
+#      while the battery is measurably taking nothing.
+#    - the target used the measured export ("drop the charge term while
+#      exporting"): every export - the Victron ramp, a load switching off, the
+#      1 s meter lag - cut the array to house load + the charge power it was
+#      ALREADY taking, so the charge power could never grow. The target is now
+#      purely feed forward: house load + allowed charge power + bias.
+#
+# D) HOW TO TEST THE FAIL-SAFE
+#    1. turn on "EMS test - simulate battery loss" -> sensor.ems_mode must
+#       become NO_BATTERY, the limit must drop to load + 20 W, grid stays >= 0
+#    2. kill the PRIMARY meter only (unplug / power off the Shelly) -> the mode
+#       must STAY FULL, the "source" attribute of sensor.ems_grid_power must
+#       become "victron" and the loop keeps regulating on the backup meter.
+#       Power it back on: the source returns to "shelly".
+#    3. kill BOTH meters -> GRID_BLIND, limit = "EMS fail-safe limit"
+#    4. disable the control-loop automation -> within ~5 minutes
+#       automation.opendtu_ems_watchdog must raise the notification and set the
+#       fail-safe limit
+#    5. re-enable it, check history of sensor.ems_grid_power: no negative
+#       excursions except short transients when big loads switch off
+#
+# E) VISIBILITY: sensor.ems_mode, sensor.ems_limit_target (mode/grid/solar
+#    attributes), sensor.ems_grid_power (source/shelly/victron attributes),
+#    binary_sensor.ems_degraded. Trigger traces show all targeted entities.
+#
+# F) GRID METERS: both meters are read every cycle. Shelly = primary,
+#    Victron smart meter = live backup, so a single meter failing no longer
+#    degrades the control at all. Requirements for the backup to be valid:
+#    it must measure the SAME metering point and the same sign convention.
+#    Verify: switch on a big load - both meters must move by the same amount.
+#    If a meter measures upstream of the Multi, it will not see loads behind
+#    the Multi and the target would be wrong.
+#    If the two disagree by more than "EMS meter tolerance" the SMALLER value
+#    (more export) is used, so a lying meter can never cause an export;
+#    binary_sensor.ems_degraded reports that situation.
+#
+# G) VICTRON RAMP: the ESS needs seconds to change the charge current and the
+#    grid meter only follows afterwards. Therefore:
+#      * crossing triggers need 5 s, the heartbeat runs every 15 s
+#      * after every write the loop waits "EMS settle time" before acting again.
+#        KEEP IT BELOW 15 s, otherwise corrections wait for the next heartbeat.
+#      * increases are capped at "EMS max step" per write; decreases are
+#        immediate because less PV can never cause an export
+#      * an export of more than 500 W bypasses the settle time
+#      * an export does NOT curtail the array any more while the battery still
+#        has charge headroom. The ramp is absorbed by "EMS export tolerance"
+#        (150 W) and "EMS export grace" (60 s); only after the grace is the
+#        offer reduced (NOTES L).
+#    Tune "EMS settle time" by watching how long the grid takes to return to the
+#    bias after a limit change: set it to that time plus a small margin.
+#
+# H) ONE INVERTER OFF: inverters whose limit entity is unavailable are excluded
+#    from sensor.ems_inverter_capacity, so the remaining ones are driven to a
+#    higher percentage (up to 100 % each) and the total target is still reached.
+#    If the remaining capacity is not enough, they run at 100 %, the grid
+#    imports the difference and the watchdog raises "PV capacity short".
+#    Watch the "active" and "current_pct" attributes of sensor.ems_inverter_
+#    capacity (and sensor.ems_limit_target) on a dashboard.
+#    IMPORTANT: this redistribution only works if your OpenDTU marks the limit
+#    entity of an offline inverter as unavailable. Verify: switch an inverter
+#    off in OpenDTU and watch "active" drop to 2 and current_pct rise.
+#
+# I) DELIVERY CHECK (catches what availability cannot): an inverter can stay
+#    "available" and still deliver nothing. sensor.ems_pv_delivery compares the
+#    commanded output (percentage x reachable capacity) with what is actually
+#    produced. The watchdog reports "PV under-delivering" when the output stays
+#    below 70 % AND more than 800 W short for 3 consecutive runs (~6 min), so a
+#    passing cloud does not raise an alarm. The counter resets when the output
+#    recovers, so the notification is raised once per episode.
+#    Response: the loop keeps pushing the percentage (up to 100 %), which is the
+#    maximum available; only identifying the dead inverter would converge faster.
+#    CAVEAT: total power alone cannot tell "one inverter is dead" from "it is
+#    cloudy" - the notification says so and points at the per-inverter status in
+#    OpenDTU. To make it unambiguous, add per-inverter power sensors so the loop
+#    can EXCLUDE a dead inverter itself. OpenDTU publishes per inverter (MQTT):
+#    <serial>/status/reachable, <serial>/status/producing, <serial>/0/power.
+#    Find the Home Assistant entity ids in Developer tools > States (search for
+#    "reachable" or "ac_power") and extend the caps map in
+#    sensor.ems_inverter_capacity like this:
+#        {%- set caps = {
+#              'number.hm1500_limit_nonpersistent_relative':
+#                 {'w': 1500, 'power': 'sensor.hm1500_ac_power'}, ... } -%}
+#        {%- for e, i in caps.items() if has_value(e) -%}
+#          {%- set lost = has_value(i.power) and (states(i.power) | float(0)) < 5 -%}
+#          {%- if not lost -%} ... add i.w to the cap ... {%- endif -%}
+#    ATTENTION: only exclude an inverter that produces 0 W while the sun is up -
+#    at night all of them read 0 W and the fail-safe would shut everything down.
+#
+# J) OPENDTU OFF / UNREACHABLE: the number.*_limit_nonpersistent_relative
+#    entities belong to the OpenDTU integration. With the DTU powered off they
+#    become unavailable, sensor.ems_inverter_capacity drops to 0 and the mode
+#    becomes DTU_BLIND: the loop stops writing (no error spam), the watchdog
+#    raises "no inverter reachable", and everything resumes by itself once the
+#    DTU is back. The EMS entities themselves (helpers, sensors, script,
+#    automations) are plain Home Assistant entities and always exist - if they
+#    are missing from Developer tools > States, the package was not loaded:
+#    check `<config>/packages/` , the `packages:` key in configuration.yaml
+#    (merge it into an existing homeassistant: block, do not add a second one!)
+#    and restart Home Assistant (helpers are only created at startup).
+#
+# K) NIGHT AND STARTUP: the inverters are powered by the sun, so at night they
+#    sleep and their limit entities may become unavailable. That is normal, not
+#    a fault, so the loop has two standby states:
+#      * STARTING - for "EMS start grace" seconds after every Home Assistant
+#        start. Nothing is written until the sensors delivered their first
+#        values and the ESS finished booting. Raise the grace time if your
+#        Victron takes longer than 2 minutes to come up.
+#      * NIGHT - sun below the horizon and less than 200 W PV. Nothing is
+#        written, no notification is raised, binary_sensor.ems_degraded stays
+#        off, and the DTU_BLIND / capacity / delivery checks stay quiet.
+#    Both states end by themselves: at sunrise the first grid import or the
+#    15 s heartbeat starts the loop again, and the limits are pushed up from
+#    whatever they were. Nothing has to be reset manually.
+#    Note: the *persistent* limit of the inverters is what they wake up with.
+#    Keep it low and let the loop raise it, or set it high if you prefer the
+#    inverters to start producing immediately at sunrise (then the loop trims
+#    within 15 s).
+#
+# L) BATTERY FIRST vs ZERO EXPORT - the charge allowance
+#
+#    The target is feed forward:  PV = house load + allowed charge power + bias
+#    (solar + grid + allowance - battery power + bias). It contains no measured
+#    export, so the array is never cut because something ELSE was exporting for
+#    a moment. The only open question is how much charge power the battery can
+#    really take. That is what "EMS charge allowance" answers:
+#
+#      * starts at "EMS max charge power" (your DVCC limit: 50 A x ~52 V)
+#      * if the grid exports more than "EMS export tolerance" for longer than
+#        "EMS export grace" while the battery takes measurably less than it is
+#        offered, the battery obviously cannot use the offer -> the allowance is
+#        cut to what the battery is taking (at most 50 % per step, so one bad
+#        reading cannot stop the charge)
+#      * as soon as the battery DISCHARGES, the estimate is reset to
+#        "EMS max charge power" (a discharge means a new charge cycle is coming,
+#        and the old value was measured under other conditions)
+#      * when there has been no export for "EMS charge re-probe" seconds, the
+#        allowance is probed upwards (x1.5) so a battery that freed up is
+#        charged at full power again by itself
+#
+#    WATCH IT LIVE: input_number.ems_charge_allowance (W), the "allowance" and
+#    "charge_push" attributes of sensor.ems_limit_target, and
+#    input_number.ems_export_ticks (0 = quiet, 4+ = a lasting export).
+#
+#    TRADE-OFF you are choosing here: every upward probe offers slightly more
+#    than the battery takes, so a refused probe exports up to (probe step) for
+#    up to "EMS export grace" seconds until the allowance is cut again. With the
+#    defaults (x1.5, 60 s, every 15 min) that is a few Wh per 15 minutes while
+#    the battery is in its CV/current-limited phase - the price for never
+#    starving the battery. Raise "EMS charge re-probe" to 3600 s if you prefer
+#    an absolutely quiet grid, at the cost of a slower recovery.
+#
+#    If "EMS charge allowance" sits permanently far below "EMS max charge
+#    power", the battery is the bottleneck (BMS CCL, temperature, cell
+#    imbalance) - that is not an EMS problem. Check the CCL and the charge
+#    voltage in the BMS, and set "EMS max charge power" to min(50 A, CCL) x the
+#    battery voltage (NOTES A).
+#
+#    TUNING for "charge as much as possible":
+#      - ems_max_charge_power = DVCC max charge current x pack voltage
+#      - ems_soc_stop = 100 (never stop the offer before the battery is full)
+#      - ems_export_tolerance = 100..200 W (meter noise, do not set it to 0)
+#      - ems_export_grace = 60..120 s (longer = more patience for the Victron)
+#      - ems_reprobe_seconds = 900 (default) or 3600 for a quieter grid
+# =============================================================================

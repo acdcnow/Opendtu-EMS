@@ -64,6 +64,27 @@ per-inverter power sensors as described in
 
 ## 2. Install the package
 
+### 2.1 With HACS
+
+This is the recommended path — the repository is a HACS **integration** that installs the
+package for you:
+
+1. HACS → ⋮ (top right) → **Custom repositories** → `https://github.com/acdcnow/opendtu-ems`,
+   type **Integration** → *Add*.
+2. Search *OpenDTU Zero-Export EMS* in HACS → **Download**, then **restart** Home Assistant
+   (a custom integration is loaded at start-up only).
+3. Settings → Devices & services → *Add integration* → **OpenDTU Zero-Export EMS** → confirm.
+   It writes `<config>/packages/opendtu_ems.yaml` and `<config>/opendtu_ems/ems-overview.yaml`
+   and reports the result as a notification and in `sensor.ems_bundle`.
+4. Continue with step 2 in [2.2](#22-by-hand) below (the `packages:` key) — the integration
+   tells you when it is missing — and then **restart** once more.
+
+An existing package file is only replaced when it is **older**; the old file stays as
+`opendtu_ems.yaml.bak`, and a newer or hand-edited file is left untouched (the notification says
+which case applied). After a HACS update, run the action `opendtu_ems.install_bundle` and restart.
+
+### 2.2 By hand
+
 1. Copy `packages/opendtu_ems.yaml` to your Home Assistant configuration directory:
 
    ```

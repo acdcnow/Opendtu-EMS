@@ -308,6 +308,10 @@ NOTIFY_CASES = {"0": False, "2": False, "3": True, "4": False}
 # to be created by the package
 DOC_EXAMPLES = {"sensor.ems_limit_target_2"}
 
+# created by the HACS integration (custom_components/opendtu_ems), not by the
+# package - see tests/validate_integration.py
+INTEGRATION_ENTITIES = {"sensor.ems_bundle"}
+
 
 def main(argv: list[str]) -> int:
     path = Path(argv[1]) if len(argv) > 1 else DEFAULT_PACKAGE
@@ -428,7 +432,7 @@ def main(argv: list[str]) -> int:
             if entity_id.endswith("_") or not entity_id.startswith(doc_scope):
                 continue
             doc_refs.add(entity_id)
-    dangling_docs = sorted(doc_refs - created_entities - DOC_EXAMPLES)
+    dangling_docs = sorted(doc_refs - created_entities - DOC_EXAMPLES - INTEGRATION_ENTITIES)
     if dangling_docs:
         fails.append(("documentation entities",
                       [f"in the docs but not created by the package: {dangling_docs}"]))

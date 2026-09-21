@@ -35,41 +35,41 @@ The full line looks like this:
 ```
 
 **What it means:** the repository was added to HACS as a *custom repository*, and HACS checked
-its file tree for the files that type requires. Nothing is wrong with your installation — HACS
-simply cannot handle a package:
+its file tree for the files that **the type you picked** requires. The two parts of the message
+are the type and the release HACS validated (with releases present it validates the newest tag
+instead of the default branch):
 
-* `<Plugin …>` is the **type you selected** in the *Add custom repository* dialog (the frontend
-  calls it *Dashboard*, the backend calls it `plugin`).
-* `v1.5.1` is the **release** HACS looked at (with releases present it validates the latest
-  tag, not the default branch).
-* For a plugin HACS needs a JavaScript file named like the repository — `opendtu-ems.js`,
-  `opendtu-ems.umd.js`, `opendtu-ems-bundle.js` (or `lovelace-` stripped) in the repository
-  root, in `dist/`, or as a release asset. For plugins HACS installs into
-  `www/community/<repo>/` and registers the file as a Lovelace **resource of type `module`** —
-  which is why it must be JavaScript at all.
+* `<Plugin …>` — the type from the *Add custom repository* dialog (*Dashboard* in the frontend,
+  `plugin` in the backend). A plugin must contain a JavaScript file named like the repository —
+  `opendtu-ems.js`, `opendtu-ems.umd.js`, `opendtu-ems-bundle.js` — in the root, in `dist/` or as
+  a release asset, because HACS registers it as a Lovelace **resource of type `module`**. A YAML
+  package is not a plugin.
+* `v1.5.1` — the release HACS inspected. The files of *that release* have to satisfy the check,
+  so a release from before the integration existed fails even when `main` is fine.
 
-No other type works either:
+**Fix:** add (or re-add) the repository with the type **Integration** — `custom_components/`
+`opendtu_ems/` with `manifest.json`, `config_flow.py` and brand images is exactly what HACS asks
+for here:
 
 | Type | HACS needs | This repository |
 |---|---|---|
-| Integration | `custom_components/opendtu_ems/manifest.json` | ✗ (a package has no Python) |
-| Dashboard (plugin) | `dist/opendtu-ems.js` or `opendtu-ems.js` in the root | ✗ |
+| **Integration** | `custom_components/opendtu_ems/manifest.json` + brand images + `hacs.json` | ✅ since **v1.5.2** |
+| Dashboard (plugin) | `dist/opendtu-ems.js` or `opendtu-ems.js` in the root | ✗ (not a frontend card) |
 | Template | `hacs.json` + `opendtu-ems.jinja` in the root | ✗ |
-| Theme / Python script / AppDaemon | a theme `.yaml`, `.py`, or `apps/` in the root | ✗ |
+| Theme / Python script / AppDaemon | a theme `.yaml`, a `.py`, or an `apps/` folder in the root | ✗ |
 
-**Fix:** remove the entry — HACS → the ⋮ menu (top right) → *Custom repositories* → the
-repository → remove. It only removes the HACS entry, nothing on disk and nothing of the EMS:
-the package is installed by copying `packages/opendtu_ems.yaml`, and HACS is only used for the
-four dashboard cards.
+1. HACS → ⋮ (top right) → *Custom repositories* → remove the wrong entry. That only removes the
+   HACS entry, nothing on disk and nothing of the EMS.
+2. Add it again with the type **Integration**, download it and follow
+   [INSTALL §2.1](INSTALL.md#21-with-hacs).
+3. Still "not compliant" with the Integration type? Then HACS looked at a release older than
+   **v1.5.2** — update the repository in HACS (⋮ → *Update information*, then *Update*), or
+   install it by hand ([INSTALL §2.2](INSTALL.md#22-by-hand)).
 
 > Do **not** try to satisfy the check by pointing `filename` in a `hacs.json` at
 > `ems-overview.yaml`. The structure check would pass, but HACS would then register that YAML
 > file as a JavaScript module for the frontend, which the browser fails to load — a broken
 > resource instead of a clear message.
-
-HACS *could* host parts of this project (a JavaScript dashboard strategy, or a real custom
-integration for the EMS); those would be new components, see
-[README](../README.md#can-hacs-install-this).
 
 ## Setup of package 'input_boolean' failed
 
