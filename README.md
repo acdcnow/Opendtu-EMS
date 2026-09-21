@@ -10,14 +10,14 @@ management loop for Hoymiles micro-inverters controlled through
 [OpenDTU](https://github.com/tbnobody/OpenDTU) (or OpenDTU-OnBattery).
 
 The loop holds the grid at a small import bias (+20 W by default) and gives the battery
-every watt it can take  but it never exports, not even when a sensor or a micro-inverter
+every watt it can take but it never exports, not even when a sensor or a micro-inverter
 dies.
 
 * one YAML file: helpers, template sensors, a script and three automations
-* a ready-made dashboard (`dashboards/ems-overview.yaml`)  see [docs/DASHBOARD.md](docs/DASHBOARD.md)
+* a ready-made dashboard (`dashboards/ems-overview.yaml`) see [docs/DASHBOARD.md](docs/DASHBOARD.md)
 * documented in depth in the [wiki](https://github.com/acdcnow/opendtu-ems/wiki): architecture
-  concept, software design, workflow diagrams  and the archived control law of ≤ 1.4.0
-* no custom component needs to be written by you and the EMS stays one YAML file  HACS
+  concept, software design, workflow diagrams and the archived control law of ≤ 1.4.0
+* no custom component needs to be written by you and the EMS stays one YAML file HACS
   delivers that file (see [Install with HACS](#install-with-hacs)) and provides the four
   dashboard cards
 * written for **Home Assistant 2026.9+** (modern `triggers` / `conditions` / `actions` syntax)
@@ -48,7 +48,7 @@ dies.
 | Situation | Behaviour |
 |---|---|
 | Battery can take power, sun is available | PV is allowed to reach `house load + allowed charge power`, so every watt the battery can take is offered to it and the grid stays at +20 W. A momentary export (Victron ramp, a load switching off) does **not** cut the array |
-| The battery takes less than it is offered | The loop learns the real acceptance (`EMS charge allowance`) after `EMS export grace` and works at that level from then on  so the export stops without starving the charge, and it probes upwards again by itself |
+| The battery takes less than it is offered | The loop learns the real acceptance (`EMS charge allowance`) after `EMS export grace` and works at that level from then on so the export stops without starving the charge, and it probes upwards again by itself |
 | Battery full (SoC `EMS SoC stop charging`, default 100 %) | PV covers the house load only, grid stays at +20 W. The stop counts only while the battery is measurably not charging, so a wrong SoC cannot cut the array |
 | One inverter offline | Its capacity share is redistributed to the remaining inverters (up to 100 % each) |
 | OpenDTU powered off / unplugged | `DTU_BLIND`: no writes, a notification says why, the loop resumes by itself |
@@ -79,7 +79,7 @@ can take is exactly what the array may produce.
 
 The **measured export does not appear in the formula**. That is the important part: a
 Victron that is still ramping up, a load switching off or a lagging meter used to be read as
-"too much PV" and cut the array to the house load  which also cut the charge power that the
+"too much PV" and cut the array to the house load which also cut the charge power that the
 battery was about to take, so the charge could never grow. Battery first means the array is
 only reduced when the battery really cannot use the power, and that is detected by
 measurement, not by an export that may be transient:
@@ -87,7 +87,7 @@ measurement, not by an export that may be transient:
 1. **Charge acceptance learning.** If the grid exports more than `EMS export tolerance`
    (150 W) for longer than `EMS export grace` (60 s) while the battery takes measurably less
    than it is offered, the offer (`EMS charge allowance`) is cut to what the battery is
-   really taking  at most by half per step, so one bad reading cannot stop the charge. The
+   really taking at most by half per step, so one bad reading cannot stop the charge. The
    estimate is reset to `EMS max charge power` whenever the battery discharges (a new charge
    cycle), and probed upwards again (×1.5) after `EMS charge re-probe` (15 min) without an
    export. So a battery that frees up is charged at full power again by itself.
@@ -107,21 +107,21 @@ and the estimate is reset) but writes nothing then.
 | Mode | When | Action |
 |---|---|---|
 | `FULL` | all sensors plausible and fresh | `load + charge_limit + bias` |
-| `STARTING` | less than *EMS start grace* (default 120 s) since Home Assistant started | nothing  waiting for the first sensor values and for the ESS |
-| `NIGHT` | sun below the horizon and less than 200 W PV | nothing  the inverters are asleep, this is not a fault |
+| `STARTING` | less than *EMS start grace* (default 120 s) since Home Assistant started | nothing waiting for the first sensor values and for the ESS |
+| `NIGHT` | sun below the horizon and less than 200 W PV | nothing the inverters are asleep, this is not a fault |
 | `DTU_BLIND` | no inverter limit entity is readable (OpenDTU off, MQTT down, ids changed) | nothing is written, `no inverter reachable` notification |
-| `NO_BATTERY` | SoC / battery power missing, stale, implausible or contradictory, or the test switch is on | `load + bias`  zero export only |
-| `GRID_BLIND` | no usable grid reading, or no solar reading to compute the house load | fail-safe limit (default 0 %)  export impossible |
+| `NO_BATTERY` | SoC / battery power missing, stale, implausible or contradictory, or the test switch is on | `load + bias` zero export only |
+| `GRID_BLIND` | no usable grid reading, or no solar reading to compute the house load | fail-safe limit (default 0 %) export impossible |
 | `OFF` | kill switch off | no writes |
 
 Additionally:
 
-* **watchdog**  no limit written for 300 s → notification + fail-safe write (the write also
+* **watchdog** no limit written for 300 s → notification + fail-safe write (the write also
   refreshes the heartbeat, so the alarm is not repeated)
-* **no inverter reachable**  OpenDTU off / MQTT down → nothing is written and the watchdog says so
-* **PV capacity short**  fewer than 3 inverters reachable, they already run at 100 % and the
+* **no inverter reachable** OpenDTU off / MQTT down → nothing is written and the watchdog says so
+* **PV capacity short** fewer than 3 inverters reachable, they already run at 100 % and the
   grid still imports
-* **PV under-delivering**  commanded output stays below 70 % and more than 800 W short for
+* **PV under-delivering** commanded output stays below 70 % and more than 800 W short for
   ~6 minutes (a passing cloud does not raise it)
 
 ## Entities it creates
@@ -140,7 +140,7 @@ Additionally:
 | `automation.opendtu_ems_watchdog` | fail-safe + capacity/delivery monitoring |
 | `automation.opendtu_ems_boot` | records the start time, so the loop stays `STARTING` after a restart |
 
-Plus 21 helpers (3 switches, 16 numbers, 2 date/times)  see
+Plus 21 helpers (3 switches, 16 numbers, 2 date/times) see
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Requirements
@@ -165,7 +165,7 @@ See [Install with HACS](#install-with-hacs).
 **Option B - manual copy:**
 
 1. Copy `packages/opendtu_ems.yaml` into your Home Assistant `<config>/packages/` folder.
-2. Enable packages in `configuration.yaml`  **one of these two forms**:
+2. Enable packages in `configuration.yaml` **one of these two forms**:
 
    ```yaml
    homeassistant:
@@ -178,7 +178,7 @@ See [Install with HACS](#install-with-hacs).
        opendtu_ems: !include packages/opendtu_ems.yaml
    ```
 
-   (A bare `packages: !include packages/opendtu_ems.yaml` does **not** work  it produces
+   (A bare `packages: !include packages/opendtu_ems.yaml` does **not** work it produces
    `Setup of package 'input_boolean' failed: Integration 'ems_enabled' not found.`)
 
 3. Restart Home Assistant and **disable the automation this package replaces**.
@@ -190,7 +190,7 @@ Full walkthrough with verification and fail-safe tests: [docs/INSTALL.md](docs/I
 ## Install with HACS
 
 This repository is a **HACS integration** (`custom_components/opendtu_ems/`). The integration is
-deliberately small  the EMS stays one YAML package  but it is what makes HACS work: it ships
+deliberately small the EMS stays one YAML package but it is what makes HACS work: it ships
 that package (and the ready-made dashboard view) inside itself and installs it for you.
 
 1. HACS → ⋮ (top right) → **Custom repositories**
@@ -206,7 +206,7 @@ that package (and the ready-made dashboard view) inside itself and installs it f
    | `<config>/packages/opendtu_ems.yaml` | the EMS package |
    | `<config>/opendtu_ems/ems-overview.yaml` | the Lovelace view to paste into a dashboard |
 
-   Existing files are **never replaced by setup** — the package is meant to be edited (section 1
+   Existing files are **never replaced by setup**: the package is meant to be edited (section 1
    holds your entity ids), so only missing files are created. Is a newer package bundled, you get
    a notification and apply it yourself with the action `opendtu_ems.install_bundle`, which keeps
    the current file as `.bak`. The result is shown as a notification and in `sensor.ems_bundle`
@@ -218,14 +218,14 @@ that package (and the ready-made dashboard view) inside itself and installs it f
      packages: !include_dir_named packages
    ```
 
-7. **Restart** again  the entities appear (`sensor.ems_mode` = `FULL` while the sun is up).
+7. **Restart** again the entities appear (`sensor.ems_mode` = `FULL` while the sun is up).
 
 After a HACS update the new version is downloaded but not applied: run the action
 `opendtu_ems.install_bundle` (Developer tools → Actions) or re-add the integration, then restart.
-The action replaces the installed package — compare it with your own version first if you edited
+The action replaces the installed package: compare it with your own version first if you edited
 section 1; the previous file stays as `.bak`.
 
-Installing *without* HACS is supported and identical in effect  copy `packages/opendtu_ems.yaml`
+Installing *without* HACS is supported and identical in effect copy `packages/opendtu_ems.yaml`
 and, if you want, `dashboards/ems-overview.yaml` by hand.
 
 ### HACS for the dashboard cards
@@ -239,17 +239,17 @@ The four cards the dashboard uses are separate HACS downloads (type **Dashboard*
 | ApexCharts Card | `RomRider/apexcharts-card` | Dashboard |
 | Mini Graph Card | `kalkih/mini-graph-card` | Dashboard |
 
-Search the name in HACS, Download, then paste the view  see
+Search the name in HACS, Download, then paste the view see
 [docs/DASHBOARD.md](docs/DASHBOARD.md#1-install-the-cards) for the details.
 
 > Adding this repository with the type **Dashboard** (frontend/`plugin`) still fails with
 > *Repository structure … is not compliant*: a plugin must be a JavaScript file, and this is not
-> one. Use **Integration**  or install by hand
+> one. Use **Integration** or install by hand
 > ([TROUBLESHOOTING](docs/TROUBLESHOOTING.md#hacs-repository-structure-is-not-compliant)).
 
 ## Day-to-day use
 
-After the installation there is nothing to do  the loop runs by itself. The entities worth
+After the installation there is nothing to do the loop runs by itself. The entities worth
 knowing:
 
 | I want to… | Use |
@@ -273,14 +273,14 @@ Healthy readings while the sun is up: mode `FULL`, `source` = `shelly`, `active`
 older than 3 minutes.
 
 If `EMS charge allowance` sits permanently below `EMS max charge power`, the battery is the
-bottleneck (BMS current limit, temperature, CV phase)  that is a battery/BMS matter, not an
+bottleneck (BMS current limit, temperature, CV phase) that is a battery/BMS matter, not an
 EMS one. If `EMS export ticks` keeps climbing, the accepted charge power is being cut further
 every `EMS export grace`; raise `EMS export tolerance` (meter noise) or `EMS export grace`
 (give the Victron more time) if the underlying cause is a ramp rather than the battery.
 
-Two modes are normal and not a fault: `NIGHT` (sun down  the inverters are asleep) and
+Two modes are normal and not a fault: `NIGHT` (sun down the inverters are asleep) and
 `STARTING` (up to `input_number.ems_start_grace`, default 120 s, after every Home Assistant
-start  nothing is written until the sensors and the ESS are up). Both end by themselves.
+start nothing is written until the sensors and the ESS are up). Both end by themselves.
 
 When something is off the system reports it itself: `binary_sensor.ems_degraded` turns on and
 one of the notifications appears (`no inverter reachable`, `PV capacity short`,
@@ -289,7 +289,7 @@ one of the notifications appears (`no inverter reachable`, `PV capacity short`,
 ## Why the relative limits
 
 `limit_nonpersistent_relative` is a percentage of each inverter's own rating, so one single
-value drives a mixed fleet correctly  for example a 1500 W HM and two 1600 W HMS:
+value drives a mixed fleet correctly for example a 1500 W HM and two 1600 W HMS:
 
 * no wrong `target / 3` arithmetic
 * a 1500 W unit never receives a value above its rating
@@ -312,25 +312,25 @@ control loop exists for exactly this failure mode.
 If your DTU has enough flash (8 MB or more, or a board you are willing to re-flash once),
 [OpenDTU-OnBattery](https://github.com/hoylabs/OpenDTU-OnBattery) implements the same idea in
 firmware as the *Dynamic Power Limiter*: target grid consumption, base load when the meter
-fails, SoC/voltage thresholds, per-inverter min/max and hysteresis  and it keeps running
+fails, SoC/voltage thresholds, per-inverter min/max and hysteresis and it keeps running
 when Home Assistant is down. Note that the DPL expects **exclusive control** of the governed
 inverters, so never run it next to this package.
 
 ## Documentation
 
-**Wiki  design and background** ([index](https://github.com/acdcnow/opendtu-ems/wiki)):
+**Wiki design and background** ([index](https://github.com/acdcnow/opendtu-ems/wiki)):
 
-* [Architecture Concept Document (ACD)](https://github.com/acdcnow/opendtu-ems/wiki/Architecture-Concept-Document)  goals, system context, concepts C1–C6, architectural decisions AD-1…AD-12, risks and roadmap
-* [Software Design Document (SDD)](https://github.com/acdcnow/opendtu-ems/wiki/Software-Design-Document)  entity inventory, exact formulas, learning algorithm, invariants, sequences, test design, traceability
-* [Workflow Diagrams](https://github.com/acdcnow/opendtu-ems/wiki/Workflow-Diagrams)  the GitDiagram repository map plus mode ladder, arbitration, control cycle, startup and fault flows
-* [Control law 1.4.x (archived)](https://github.com/acdcnow/opendtu-ems/wiki/Archive-1.4-Control-Law)  the superseded export-feedback design, why it starved the battery, and the migration steps
+* [Architecture Concept Document (ACD)](https://github.com/acdcnow/opendtu-ems/wiki/Architecture-Concept-Document) goals, system context, concepts C1–C6, architectural decisions AD-1…AD-12, risks and roadmap
+* [Software Design Document (SDD)](https://github.com/acdcnow/opendtu-ems/wiki/Software-Design-Document) entity inventory, exact formulas, learning algorithm, invariants, sequences, test design, traceability
+* [Workflow Diagrams](https://github.com/acdcnow/opendtu-ems/wiki/Workflow-Diagrams) the GitDiagram repository map plus mode ladder, arbitration, control cycle, startup and fault flows
+* [Control law 1.4.x (archived)](https://github.com/acdcnow/opendtu-ems/wiki/Archive-1.4-Control-Law) the superseded export-feedback design, why it starved the battery, and the migration steps
 
 **In this repository:**
 
-* [docs/INSTALL.md](docs/INSTALL.md)  step by step: prerequisites, install, verification, fail-safe tests
-* [docs/DASHBOARD.md](docs/DASHBOARD.md)  the Lovelace view, the HACS cards used and how to adapt them
-* [docs/CONFIGURATION.md](docs/CONFIGURATION.md)  every helper, tuning guide, dashboard entities
-* [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)  symptoms, causes, fixes
+* [docs/INSTALL.md](docs/INSTALL.md) step by step: prerequisites, install, verification, fail-safe tests
+* [docs/DASHBOARD.md](docs/DASHBOARD.md) the Lovelace view, the HACS cards used and how to adapt them
+* [docs/CONFIGURATION.md](docs/CONFIGURATION.md) every helper, tuning guide, dashboard entities
+* [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) symptoms, causes, fixes
 * [CHANGELOG.md](CHANGELOG.md)
 
 ## Disclaimer
