@@ -211,6 +211,10 @@ Check in this order:
 
 ## PV is cut although the battery could take it
 
+> Running **1.4.0 or older?** Then this is expected behaviour of that version — read
+> [Control law 1.4.x (archived)](https://github.com/acdcnow/opendtu-ems/wiki/Archive-1.4-Control-Law).
+> It explains the export ratchet, the SoC taper and the migration to 1.5.x.
+
 This was a real bug up to 1.4.x and is fixed in 1.5.0. Understand the numbers first, then
 check the ones on your system:
 

@@ -5,6 +5,14 @@ Entity IDs below are the ones of the reference installation (a Victron ESS with 
 battery, a Shelly 3EM Pro, a Victron smart meter and three Hoymiles inverters on an
 OpenDTU). Replace them with yours wherever they appear.
 
+> **Design background** (why the package works the way it does) lives in the wiki:
+> [Architecture Concept Document](https://github.com/acdcnow/opendtu-ems/wiki/Architecture-Concept-Document) ·
+> [Software Design Document](https://github.com/acdcnow/opendtu-ems/wiki/Software-Design-Document) ·
+> [Workflow Diagrams](https://github.com/acdcnow/opendtu-ems/wiki/Workflow-Diagrams).
+> Coming from **1.4.0 or older**, read the
+> [archived 1.4 control law](https://github.com/acdcnow/opendtu-ems/wiki/Archive-1.4-Control-Law)
+> first — two helpers disappear and the charging behaviour changes.
+
 ---
 
 ## 1. Prerequisites checklist

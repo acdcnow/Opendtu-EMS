@@ -3,6 +3,7 @@
 [![Validate package](https://github.com/acdcnow/opendtu-ems/actions/workflows/validate.yml/badge.svg)](https://github.com/acdcnow/opendtu-ems/actions/workflows/validate.yml)
 [![Release](https://img.shields.io/github/v/release/acdcnow/opendtu-ems)](https://github.com/acdcnow/opendtu-ems/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Wiki](https://img.shields.io/badge/docs-wiki-blue)](https://github.com/acdcnow/opendtu-ems/wiki)
 
 A single-file Home Assistant package that runs a **battery-first, zero-export** energy
 management loop for Hoymiles micro-inverters controlled through
@@ -14,6 +15,8 @@ dies.
 
 * one YAML file: helpers, template sensors, a script and three automations
 * a ready-made dashboard (`dashboards/ems-overview.yaml`) — see [docs/DASHBOARD.md](docs/DASHBOARD.md)
+* documented in depth in the [wiki](https://github.com/acdcnow/opendtu-ems/wiki): architecture
+  concept, software design, workflow diagrams — and the archived control law of ≤ 1.4.0
 * no custom integration, no Node-RED, no AppDaemon — and HACS is only needed for the dashboard cards (see [Can HACS install this?](#can-hacs-install-this))
 * written for **Home Assistant 2026.9+** (modern `triggers` / `conditions` / `actions` syntax)
 * 73 Jinja templates, parsed and rendered by CI on every push
@@ -272,6 +275,15 @@ when Home Assistant is down. Note that the DPL expects **exclusive control** of 
 inverters, so never run it next to this package.
 
 ## Documentation
+
+**Wiki — design and background** ([index](https://github.com/acdcnow/opendtu-ems/wiki)):
+
+* [Architecture Concept Document (ACD)](https://github.com/acdcnow/opendtu-ems/wiki/Architecture-Concept-Document) — goals, system context, concepts C1–C6, architectural decisions AD-1…AD-12, risks and roadmap
+* [Software Design Document (SDD)](https://github.com/acdcnow/opendtu-ems/wiki/Software-Design-Document) — entity inventory, exact formulas, learning algorithm, invariants, sequences, test design, traceability
+* [Workflow Diagrams](https://github.com/acdcnow/opendtu-ems/wiki/Workflow-Diagrams) — the GitDiagram repository map plus mode ladder, arbitration, control cycle, startup and fault flows
+* [Control law 1.4.x (archived)](https://github.com/acdcnow/opendtu-ems/wiki/Archive-1.4-Control-Law) — the superseded export-feedback design, why it starved the battery, and the migration steps
+
+**In this repository:**
 
 * [docs/INSTALL.md](docs/INSTALL.md) — step by step: prerequisites, install, verification, fail-safe tests
 * [docs/DASHBOARD.md](docs/DASHBOARD.md) — the Lovelace view, the HACS cards used and how to adapt them

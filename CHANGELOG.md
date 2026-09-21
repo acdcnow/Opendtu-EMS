@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- **Wiki published** (https://github.com/acdcnow/opendtu-ems/wiki) with a landing page that
+  serves the current line *and* the superseded one:
+  [Architecture Concept Document](https://github.com/acdcnow/opendtu-ems/wiki/Architecture-Concept-Document)
+  (goals and non-goals, system context, concepts C1–C6, decisions AD-1…AD-12, NFRs, risks,
+  roadmap),
+  [Software Design Document](https://github.com/acdcnow/opendtu-ems/wiki/Software-Design-Document)
+  (deployment model, entity inventory, freshness rules, component design with the exact
+  formulas, the learning algorithm, the watchdog, 12 invariants, sequences, test/CI design,
+  release process, traceability),
+  [Workflow Diagrams](https://github.com/acdcnow/opendtu-ems/wiki/Workflow-Diagrams)
+  (GitDiagram repository map — 14 components, 19 connections — plus mode ladder, meter
+  arbitration, control cycle, learning, startup, fault and deployment flows) and
+  [Control law 1.4.x (archived)](https://github.com/acdcnow/opendtu-ems/wiki/Archive-1.4-Control-Law)
+  (the export-feedback law, its two failure modes, how to recognise them and the 1.5.x
+  migration).
+- README (incl. a wiki badge), INSTALL, CONFIGURATION and TROUBLESHOOTING link into the wiki;
+  the package header now points at it as well.
 - `docs/TROUBLESHOOTING.md`: the exact HACS error
   (`<Plugin …> Repository structure for vX.Y.Z is not compliant`) explained — what the category
   prefix and the version in the message mean, why no HACS type fits a package, and how to

@@ -53,6 +53,11 @@
 #  SECTIONS
 #   1) entity ids     2) helpers      3) sensors
 #   4) script (write) 5) control loop 6) watchdog / fail-safe
+#
+#  WIKI - the reasoning behind all of this, with diagrams:
+#   https://github.com/acdcnow/opendtu-ems/wiki
+#   (Architecture Concept Document, Software Design Document, Workflow Diagrams
+#    and the archived control law of 1.4.x and older)
 # =============================================================================
 
 

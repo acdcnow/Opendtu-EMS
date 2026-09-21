@@ -2,6 +2,12 @@
 
 Everything the package creates, what it means and how to tune it.
 
+> The reasoning behind the control law, the mode ladder and the acceptance learning is in the
+> wiki: [Architecture Concept Document](https://github.com/acdcnow/opendtu-ems/wiki/Architecture-Concept-Document)
+> and [Software Design Document](https://github.com/acdcnow/opendtu-ems/wiki/Software-Design-Document)
+> (component design, formulas, invariants). The superseded 1.4.x behaviour is documented in
+> [Control law 1.4.x (archived)](https://github.com/acdcnow/opendtu-ems/wiki/Archive-1.4-Control-Law).
+
 ---
 
 ## Modes
