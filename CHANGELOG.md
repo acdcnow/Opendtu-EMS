@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- the dashboard gained a *restore defaults* chip (tap → confirmation → `script.ems_set_defaults`).
+
+### Changed
+
+- CI: `actions/setup-python` v5 → v7. v5 still targeted Node.js 20 and produced a deprecation
+  warning on every run.
+
 ## [1.6.0] - 2026-09-23
 
 ### Added
@@ -50,9 +61,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/CONFIGURATION.md`: the mode table, the design-decision formula and the
   `binary_sensor.ems_degraded` description corrected; the helper tables now state where the
   defaults come from.
-
-### Documentation
-
 - **Wiki published** (https://github.com/acdcnow/opendtu-ems/wiki) with a landing page that
   serves the current line *and* the superseded one:
   [Architecture Concept Document](https://github.com/acdcnow/opendtu-ems/wiki/Architecture-Concept-Document)

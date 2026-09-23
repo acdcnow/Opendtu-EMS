@@ -80,7 +80,7 @@ Both are marked `EDIT` in the file and degrade gracefully if you leave them alon
 | Chips | `sensor.ems_mode` (+ Victron stage), `sensor.ems_limit_target`, **charge offer / push** (`allowance` and `charge_push` attributes of `sensor.ems_limit_target`), `sensor.ems_inverter_capacity` (`active`, W), `sensor.ems_pv_delivery`, `binary_sensor.ems_degraded` |
 | Trends | `sensor.solarleistung_gesamt`, `sensor.ems_house_load`, `sensor.ems_grid_power` (green below 0 = export, red above = import), `sensor.serialbattery_seplos_leistung`, `sensor.ems_limit_target` (%) |
 | SoC graph | `sensor.serialbattery_seplos_ladestand` |
-| Controls | `input_boolean.ems_enabled`, `input_number.ems_manual_pct`, `input_boolean.ems_simulate_battery_loss`, bias / settle / step / hysteresis / fail-safe, SoC stop, export tolerance / grace, charge re-probe, `input_datetime.ems_last_apply` |
+| Controls | `input_boolean.ems_enabled`, `input_number.ems_manual_pct`, `input_boolean.ems_simulate_battery_loss`, bias / settle / step / hysteresis / fail-safe, SoC stop, export tolerance / grace, charge re-probe, `input_datetime.ems_last_apply`, and the *restore defaults* chip (`script.ems_set_defaults`, with a confirmation) |
 | Diagnostics | `sensor.ems_pv_delivery` attributes, `sensor.ems_inverter_capacity` attributes, `input_datetime.ems_started_at`, `input_number.ems_charge_allowance`, `input_number.ems_export_ticks` |
 
 ### The charge offer chip

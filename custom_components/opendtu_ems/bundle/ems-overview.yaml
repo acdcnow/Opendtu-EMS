@@ -163,6 +163,18 @@ cards:
           {{ 'red' if is_state('binary_sensor.ems_degraded', 'on') else 'green' }}
         tap_action:
           action: more-info
+      # the documented tuning defaults, in one action: confirmation first, then
+      # script.ems_set_defaults writes all 16 helpers (see the README section
+      # "Settings: what every value does")
+      - type: template
+        icon: mdi:backup-restore
+        content: restore defaults
+        icon_color: red
+        tap_action:
+          action: perform-action
+          perform_action: script.ems_set_defaults
+          confirmation:
+            text: Reset all 16 EMS tuning helpers to the documented defaults?
 
   # ---------------------------------------------------------------------------
   # 3) trends: PV, house load, grid, battery (W) and the EMS limit (%)
