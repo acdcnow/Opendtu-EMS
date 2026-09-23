@@ -182,58 +182,59 @@ BASE = {
 }
 
 # name: (data, mode, meter source, grid, capacity, active, target %, write?)
-# target % is "house load + allowed charge power + bias" scaled to the reachable
-# capacity - the battery-first law: solar + grid + (allowance - battery) + bias.
+# target % is "house load + allowed charge power - bias" scaled to the reachable
+# capacity - the battery-first law: solar + grid + (allowance - battery) - bias.
+# The bias is SUBTRACTED (1.6.0): the loop aims at a small grid IMPORT.
 CONTROL_CASES = {
-    "normal": (dict(BASE), "FULL", "shelly", -234, 4700, 3, 86.9, True),
+    "normal": (dict(BASE), "FULL", "shelly", -234, 4700, 3, 86.1, True),
     # the array exports, but the battery still has 1300 W of headroom: the
     # offer must NOT be cut (that was the 1.4.x bug)
     "battery-first, exporting 1200 W": ({**BASE, S: "-1200", V: "-1200",
                                          "sensor.solarleistung_gesamt": "4500"},
-                                        "FULL", "shelly", -1200, 4700, 3, 98.3, True),
-    # battery at its allowance: the surplus is curtailed (load + charge + bias)
+                                        "FULL", "shelly", -1200, 4700, 3, 97.4, True),
+    # battery at its allowance: the surplus is curtailed (load + charge - bias)
     "battery at allowance, curtailing": ({**BASE, S: "-1600", V: "-1600",
                                           "sensor.solarleistung_gesamt": "4600",
                                           "sensor.serialbattery_seplos_leistung": "2500"},
-                                         "FULL", "shelly", -1600, 4700, 3, 64.3, True),
+                                         "FULL", "shelly", -1600, 4700, 3, 63.4, True),
     # the learned acceptance caps the offer
     "charge allowance 800 W": ({**BASE, S: "-400", V: "-400",
                                 "sensor.solarleistung_gesamt": "1000",
                                 "sensor.serialbattery_seplos_leistung": "0",
                                 "input_number.ems_charge_allowance": "800"},
-                               "FULL", "shelly", -400, 4700, 3, 30.2, True),
+                               "FULL", "shelly", -400, 4700, 3, 29.4, True),
     # discharging: the offer also covers what the battery is giving up
     "battery discharging 800 W": ({**BASE, S: "300", V: "300",
                                    "sensor.solarleistung_gesamt": "500",
                                    "sensor.serialbattery_seplos_leistung": "-800"},
-                                  "FULL", "shelly", 300, 4700, 3, 87.7, True),
+                                  "FULL", "shelly", 300, 4700, 3, 86.8, True),
     # SoC stop: only honoured while the battery is measurably idle
     "SoC stop, battery idle": ({**BASE, S: "-1000", V: "-1000",
                                 "sensor.solarleistung_gesamt": "3500",
                                 "sensor.serialbattery_seplos_leistung": "0",
                                 "sensor.serialbattery_seplos_ladestand": "100"},
-                               "FULL", "shelly", -1000, 4700, 3, 53.6, True),
+                               "FULL", "shelly", -1000, 4700, 3, 52.8, True),
     "SoC stop ignored while charging": ({**BASE, S: "-1000", V: "-1000",
                                          "sensor.solarleistung_gesamt": "3500",
                                          "sensor.serialbattery_seplos_leistung": "800",
                                          "sensor.serialbattery_seplos_ladestand": "100"},
-                                        "FULL", "shelly", -1000, 4700, 3, 89.8, True),
+                                        "FULL", "shelly", -1000, 4700, 3, 88.9, True),
     "primary meter DEAD": ({**BASE, S: "unavailable"},
-                           "FULL", "victron", -240, 4700, 3, 86.8, True),
+                           "FULL", "victron", -240, 4700, 3, 86.0, True),
     "primary meter FROZEN": ({**BASE, f"__age:{S}": 600},
-                             "FULL", "victron", -240, 4700, 3, 86.8, True),
+                             "FULL", "victron", -240, 4700, 3, 86.0, True),
     "backup importing 500 W": ({**BASE, S: "unavailable", V: "500"},
                                "FULL", "victron", 500, 4700, 3, 100.0, True),
     "meters disagree (export)": ({**BASE, V: "500"},
-                                 "FULL", "disagree", -234, 4700, 3, 86.9, True),
+                                 "FULL", "disagree", -234, 4700, 3, 86.1, True),
     "meters disagree (import)": ({**BASE, S: "100", V: "900"},
-                                 "FULL", "disagree", 100, 4700, 3, 94.0, True),
+                                 "FULL", "disagree", 100, 4700, 3, 93.2, True),
     "both meters DEAD": ({**BASE, S: "unavailable", V: "unavailable"},
                          "GRID_BLIND", "none", None, 4700, 3, 0.0, True),
     "both meters FROZEN": ({**BASE, f"__age:{S}": 600, f"__age:{V}": 600},
                            "GRID_BLIND", "none", None, 4700, 3, 0.0, True),
     "battery data lost": ({**BASE, "sensor.serialbattery_seplos_leistung": "unknown"},
-                          "NO_BATTERY", "shelly", -234, 4700, 3, 59.3, True),
+                          "NO_BATTERY", "shelly", -234, 4700, 3, 58.4, True),
     "manual 50 %": ({**BASE, "input_number.ems_manual_pct": "50"},
                     "FULL", "shelly", -234, 4700, 3, 50.0, True),
     "kill switch off": ({**BASE, "input_boolean.ems_enabled": "off"},
@@ -265,37 +266,37 @@ CONTROL_CASES = {
     "start grace active": ({**BASE,
                             "__attr:input_datetime.ems_started_at:timestamp":
                                 REF.timestamp() - 30},
-                           "STARTING", "shelly", -234, 4700, 3, 59.3, False),
+                           "STARTING", "shelly", -234, 4700, 3, 58.4, False),
     "start grace elapsed": ({**BASE,
                              "__attr:input_datetime.ems_started_at:timestamp":
                                  REF.timestamp() - 600},
-                            "FULL", "shelly", -234, 4700, 3, 86.9, True),
+                            "FULL", "shelly", -234, 4700, 3, 86.1, True),
     # Victron ramp: slew limit and settle time
     "slew: rise is limited": ({**BASE, "input_number.ems_max_step_pct": "10",
                                I1: "86.9", I2: "86.9", I3: "86.9", S: "500", V: "500"},
                               "FULL", "shelly", 500, 4700, 3, 96.9, True),
     "slew: cut is immediate": ({**BASE, "input_number.ems_max_step_pct": "10",
                                 I1: "100", I2: "100", I3: "100", S: "-900", V: "-900"},
-                               "FULL", "shelly", -900, 4700, 3, 72.8, True),
+                               "FULL", "shelly", -900, 4700, 3, 71.9, True),
     "settle: too soon (no write)": ({**BASE, "input_number.ems_settle_seconds": "12",
                                      "__last_apply": REF.timestamp() - 3},
-                                    "FULL", "shelly", -234, 4700, 3, 86.9, False),
+                                    "FULL", "shelly", -234, 4700, 3, 86.1, False),
     "settle: export bypasses": ({**BASE, "input_number.ems_settle_seconds": "12",
                                  "__last_apply": REF.timestamp() - 3, S: "-900", V: "-900"},
-                                "FULL", "shelly", -900, 4700, 3, 72.8, True),
+                                "FULL", "shelly", -900, 4700, 3, 71.9, True),
 }
 
 # name: (data, delivery %, under-delivery notification, expected output W)
 DELIVERY_CASES = {
-    "delivery ok": (dict(BASE), 73, False, 4084),
+    "delivery ok": (dict(BASE), 74, False, 4047),
     "one inverter dead": ({**BASE, S: "500", V: "500",
-                           "sensor.solarleistung_gesamt": "800"}, 31, True, 2618),
+                           "sensor.solarleistung_gesamt": "800"}, 31, True, 2580),
     "cloudy, big gap": ({**BASE, S: "500", V: "500",
-                         "sensor.solarleistung_gesamt": "2400"}, 57, True, 4221),
+                         "sensor.solarleistung_gesamt": "2400"}, 57, True, 4178),
     "night": ({**BASE, S: "300", V: "300", "sensor.solarleistung_gesamt": "0",
-               "sensor.serialbattery_seplos_leistung": "-100"}, 0, False, 2919),
+               "sensor.serialbattery_seplos_leistung": "-100"}, 0, False, 2881),
     "low sun": ({**BASE, S: "500", V: "500",
-                 "sensor.solarleistung_gesamt": "150"}, 8, False, 1969),
+                 "sensor.solarleistung_gesamt": "150"}, 8, False, 1932),
     "manual 5 % (expected < 300 W)": ({**BASE, "input_number.ems_manual_pct": "5"},
                                       100, False, 235),
 }
@@ -488,6 +489,31 @@ def main(argv: list[str]) -> int:
     if written != mapped:
         fails.append(("capacity map", sorted(written ^ mapped)))
         print("  !! the script and the capacity map disagree")
+
+    # --- 3b. the documented defaults cover every helper -------------------
+    # Home Assistant creates an input_number without "initial" at its minimum
+    # and never sets it afterwards, so script.ems_set_defaults is the only thing
+    # that gives a fresh installation workable values. Every helper must be in
+    # it exactly once, and every value must be inside its own min..max.
+    print("\n== documented defaults (script.ems_set_defaults) ==")
+    default_steps = doc["script"]["ems_set_defaults"]["sequence"][0]["parallel"]
+    defaults = {step["target"]["entity_id"]: step["data"]["value"]
+                for step in default_steps}
+    helpers = {f"input_number.{key}": value
+               for key, value in doc["input_number"].items()}
+    uncovered = sorted(set(helpers) - set(defaults))
+    strangers = sorted(set(defaults) - set(helpers))
+    if uncovered or strangers:
+        fails.append(("defaults coverage", [f"not in the script: {uncovered}",
+                                            f"not a helper: {strangers}"]))
+    out_of_range = [f"{e}={defaults[e]}" for e in sorted(set(helpers) & set(defaults))
+                    if not helpers[e]["min"] <= float(defaults[e]) <= helpers[e]["max"]]
+    if out_of_range:
+        fails.append(("defaults out of range", out_of_range))
+    for entity_id in sorted(set(helpers) & set(defaults)):
+        print(f"  {entity_id:<42}{str(defaults[entity_id]):>6} W/%/s"
+              f"   ({helpers[entity_id]['min']}..{helpers[entity_id]['max']})")
+    print(f"  {len(defaults)} of {len(helpers)} helpers covered")
 
     # --- 4. behaviour -----------------------------------------------------
     sensors = {s["unique_id"]: s for s in doc["template"][0]["sensor"]}
@@ -846,6 +872,57 @@ def main(argv: list[str]) -> int:
         print(f"  mode {mode:<10} loop-writes={writes:<6} degraded={degraded:<6} "
               f"{'OK' if not why else '!! ' + '; '.join(why)}")
 
+    print("\n== degraded sensor (mode + which meter is in use) ==")
+    # The meter source is only judged while the loop is really regulating: a
+    # standby state stays silent even when the primary meter is gone, which was
+    # a false alarm before 1.6.0 (both meters stale at night -> source "none").
+    for mode, source, want in (("FULL", "shelly", False),
+                               ("FULL", "victron", True),
+                               ("FULL", "disagree", True),
+                               ("FULL", "none", True),
+                               ("NO_BATTERY", "shelly", True),
+                               ("STARTING", "none", False),
+                               ("NIGHT", "shelly", False),
+                               ("NIGHT", "victron", False),
+                               ("NIGHT", "none", False),
+                               ("OFF", "none", False)):
+        data = {**BASE, "sensor.ems_mode": mode,
+                "__attr:sensor.ems_grid_power:source": source}
+        got = render(bsens["ems_degraded"]["state"], data)
+        if got != str(want):
+            fails.append((f"degraded {mode}/{source}", [f"got {got}, want {want}"]))
+        print(f"  {'OK ' if got == str(want) else '!! '}mode {mode:<11}"
+              f"source {source:<9} degraded={got}")
+
+    print("\n== first start seeding (automation.opendtu_ems_boot) ==")
+    # The helpers are created empty, so the documented defaults are applied
+    # exactly once: while ems_started_at has never been written.
+    boot = automations["opendtu_ems_boot"]
+    boot_tpl = next(text for _, text in walk_strings(boot["actions"])
+                    if "ems_started_at" in text and "float(0)" in text)
+    for label, data, want in (
+            ("fresh install (start time empty)", dict(BASE), "True"),
+            ("later restart (start time restored)",
+             {**BASE, "__attr:input_datetime.ems_started_at:timestamp":
+              REF.timestamp() - 600}, "False")):
+        got = render(boot_tpl, data)
+        if got != want:
+            fails.append((f"first_boot {label}", [f"got {got}, want {want}"]))
+        print(f"  {'OK ' if got == want else '!! '}{label:<34}first_boot={got}")
+
+    def has_action(node, kind):
+        if isinstance(node, dict):
+            return node.get("action") == kind or any(
+                has_action(value, kind) for value in node.values())
+        if isinstance(node, list):
+            return any(has_action(value, kind) for value in node)
+        return False
+
+    if not has_action(boot["actions"], "script.ems_set_defaults"):
+        fails.append(("first start seeding",
+                      ["the boot automation does not call script.ems_set_defaults"]))
+    else:
+        print("  OK the boot automation calls script.ems_set_defaults")
     # a missing inverter must not be reported as a capacity shortfall
     for active, expect in ((0, False), (2, True)):
         data = {**BASE, "sensor.ems_mode": "FULL",

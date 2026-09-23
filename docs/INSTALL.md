@@ -181,8 +181,12 @@ tion and the delivery check work.
 ## 4. Set the helpers
 
 All 21 helpers are created by the package (Settings → Devices & services → Helpers).
-Start with the defaults and change them in the order given in
-[Tuning](#8-tuning-order).
+They are created **empty** — Home Assistant creates an `input_number` without an
+`initial` value at its minimum, and only restores a value that already exists — so since
+1.6.0 `automation.opendtu_ems_boot` applies the defaults below once, on the first start after
+the installation. Verify them and change what your installation needs in the order given in
+[Tuning](#8-tuning-order); nothing overwrites them ever again,
+and `script.ems_set_defaults` puts the whole set back to these values at any time.
 
 | Helper | Default | Set it to |
 |---|---|---|
@@ -230,12 +234,12 @@ Copy the ready-made card from
    to `configuration.yaml`. Every write then logs a line such as:
 
    ```
-   FULL | grid -234W [shelly] | solar 3000W | SoC 85% | bat 1200W | inv 3/3 cap 4700W | limit 86.9%
+   FULL | grid -234W [shelly] | solar 3000W | SoC 85% | bat 1200W | inv 3/3 cap 4700W | limit 86.1%
    ```
 
-   With the battery-first law this line reads `house load (1566 W) + charge offer (2500 W)`,
-   i.e. the array is allowed 4086 W; the log also writes a `CHARGE ALLOWANCE:` line whenever
-the offer is reduced.
+   With the battery-first law this line reads `house load (1566 W) + charge offer (2500 W) -
+   bias (20 W)`, i.e. the array is allowed 4046 W; the log also writes a
+   `CHARGE ALLOWANCE:` line whenever the offer is reduced.
 
 3. **Expected steady state**: `sensor.ems_grid_power` hovers around `+20 W`, the limit moves
    only when the load or the SoC changes, `sensor.ems_pv_delivery` stays near 100 % and
@@ -266,8 +270,9 @@ Do all five, in this order, while watching the grid power:
    the export transients after each increase.
 3. **`EMS hysteresis`** — raise until the number of writes is comfortable (check
    `input_datetime.ems_last_apply` history).
-4. **`EMS grid bias`** — raise only if your meter is noisy or you are billed for tiny
-   imports.
+4. **`EMS grid bias`** — the loop aims at this much grid *import* (it is subtracted from the
+   target), so raise it only if your meter is noisy or has a small permanent offset. The array
+   then produces that much less. `0` puts the loop exactly on the import/export boundary.
 5. **Export knobs (`EMS export tolerance`, `EMS export grace`, `EMS charge re-probe`)** —
    these decide how much patience the array gives the battery and the Victron. Symptoms and
 their direction:
@@ -279,8 +284,8 @@ their direction:
    * `EMS charge allowance` recovers too slowly after the battery freed up → lower
      `EMS charge re-probe` (e.g. 300 s)
 6. **`EMS SoC stop charging`** — leave at 100 %. Lower it only if you deliberately want to
-   stop charging before the pack is full (then the array covers the house load only from that
-   SoC on).
+   stop charging before the pack is full: from that SoC on the array falls back to the house
+   load (minus the bias), but only once the battery has measurably stopped charging.
 
 ---
 

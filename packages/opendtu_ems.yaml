@@ -1,6 +1,6 @@
 # =============================================================================
 #  OpenDTU  ·  Battery-first / zero-export EMS      (Home Assistant 2026.9)
-#  version 1.5.1  ·  2026-09-20  ·  see CHANGELOG.md
+#  version 1.6.0  ·  2026-09-23  ·  see CHANGELOG.md
 # -----------------------------------------------------------------------------
 #  Drop-in replacement for the automation
 #  "OpenDTU: Battery-First Aggressive EMS (Math-Based)".
@@ -52,7 +52,7 @@
 #
 #  SECTIONS
 #   1) entity ids     2) helpers      3) sensors
-#   4) script (write) 5) control loop 6) watchdog / fail-safe
+#   4) scripts (write + defaults)      5) control loop 6) watchdog / fail-safe
 #
 #  WIKI - the reasoning behind all of this, with diagrams:
 #   https://github.com/acdcnow/opendtu-ems/wiki
@@ -120,7 +120,9 @@ input_number:
     mode: box
     unit_of_measurement: "%"
     icon: mdi:hand-back-right-outline
-  # small import bias so that we never sit exactly on the export boundary
+  # The grid target: the loop aims at this many watts of IMPORT by SUBTRACTING
+  # it from the PV target (section 3), so the grid never sits exactly on the
+  # export boundary. Raising it therefore lets the array produce LESS.
   ems_grid_bias:
     name: EMS grid bias
     min: 0
@@ -351,7 +353,8 @@ template:
       #               OpenDTU power sensor gone) -> cannot compute the house
       #               load -> fail-safe limit
       #   NO_BATTERY  no usable battery data -> pure zero export (no charge push)
-      #   FULL        everything fresh -> house load + allowed charge power + bias
+      #   FULL        everything fresh -> house load + allowed charge power - bias
+      #               (a small IMPORT, so it never exports)
       #               (also when only the BACKUP grid meter is available)
       - name: "EMS mode"
         unique_id: ems_mode
@@ -468,8 +471,14 @@ template:
 
       # --- limit percentage to write (single source of truth) ---------------
       # BATTERY FIRST - and never on the back of a momentary export:
-      #   FULL        PV = house load + battery charge power + bias
-      #                  = solar + grid + (allowance - battery power) + bias
+      #   FULL        PV = house load + battery charge power - bias
+      #                  = solar + grid + (allowance - battery power) - bias
+      #               "bias" is SUBTRACTED on purpose: the loop aims at
+      #               "EMS grid bias" watts of grid IMPORT, so the steady state
+      #               is a small import and not a small export. Until 1.6.0 the
+      #               sign was the other way round, which made the loop hold a
+      #               permanent export of the same size (raising the bias made
+      #               that export bigger).
       #               "allowance" = min(EMS max charge power, EMS charge
       #               allowance): the configured maximum, capped by the power
       #               the battery has been OBSERVED to accept. The measured
@@ -479,7 +488,7 @@ template:
       #               when the battery really cannot take the power - which is
       #               what the allowance learning in the control loop detects
       #               (NOTES section L).
-      #   NO_BATTERY  PV = house load + battery + bias (= solar + grid + bias)
+      #   NO_BATTERY  PV = house load + battery - bias (= solar + grid - bias)
       #   GRID_BLIND  fail-safe percentage             (export impossible)
       # The SoC stops the charge offer only at "EMS SoC stop charging" AND only
       # while the battery is really not charging, so a wrong or stuck SoC value
@@ -542,7 +551,7 @@ template:
                                 and bat < tol -%}
               {%- set push.w = 0 if stopped else [allow - bat, 0] | max -%}
             {%- endif -%}
-            {%- set target = [[solar + grid + push.w + bias, 0] | max, cap] | min -%}
+            {%- set target = [[solar + grid + push.w - bias, 0] | max, cap] | min -%}
             {%- set pct = target / cap * 100 -%}
             {%- set step = states('input_number.ems_max_step_pct') | float(10) -%}
             {%- if cur >= 0 and pct > cur -%}
@@ -553,20 +562,25 @@ template:
           {%- endif -%}
 
   - binary_sensor:
-      # on when running degraded: any non-FULL mode, or when the grid reading
-      # comes from the backup meter / the two meters disagree.
-      # STARTING, NIGHT and OFF are normal states, not a problem.
+      # on when running degraded: any mode that is not FULL / OFF / STARTING /
+      # NIGHT, or - while the loop is really regulating (FULL) - a grid reading
+      # that comes from the backup meter or two meters that disagree.
+      # STARTING, NIGHT and OFF are normal states, not a problem, and the meter
+      # source is only judged while a limit is actually computed: both meters
+      # going stale at night no longer raises a false alarm.
       - name: "EMS degraded"
         unique_id: ems_degraded
         device_class: problem
         icon: mdi:alert-outline
         state: >-
-          {{- states('sensor.ems_mode') not in ['FULL', 'OFF', 'NIGHT', 'STARTING']
-              or state_attr('sensor.ems_grid_power', 'source') != 'shelly' -}}
+          {%- set mode = states('sensor.ems_mode') -%}
+          {{- mode not in ['FULL', 'OFF', 'NIGHT', 'STARTING']
+              or (mode == 'FULL'
+                  and state_attr('sensor.ems_grid_power', 'source') != 'shelly') -}}
 
 
 # =============================================================================
-# 4) SCRIPT - write the limits (atomic, per-inverter error tolerant)
+# 4) SCRIPTS - write the limits, and restore the documented defaults
 # =============================================================================
 script:
   ems_apply:
@@ -613,6 +627,130 @@ script:
             data:
               value: "{{ value }}"
             continue_on_error: true
+
+  # The documented defaults of every tuning helper, in one place.
+  # WHY THIS EXISTS: Home Assistant creates an input_number that has no
+  # "initial" value at its MINIMUM and only restores a value that already
+  # exists (see the HA documentation of input_number: with "initial" it starts
+  # with that value, otherwise it restores the previous state - and a brand new
+  # helper has none). A fresh installation would therefore run with 0 W of
+  # charge power and never charge from PV at all.
+  # "initial" is NOT the answer here: it would also overwrite your tuning and
+  # the learned charge allowance on every Home Assistant restart.
+  # automation.opendtu_ems_boot calls this once, on the first start after the
+  # install. Run it by hand (Developer tools > Actions) to reset the tuning or
+  # to repair an installation whose helpers were created empty by a version
+  # before 1.6.0.
+  ems_set_defaults:
+    alias: "EMS: restore the documented defaults"
+    mode: single
+    sequence:
+      - parallel:
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_manual_pct
+            data:
+              value: -1
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_grid_bias
+            data:
+              value: 20
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_hysteresis_pct
+            data:
+              value: 2
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_max_charge_power
+            data:
+              value: 2500
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_soc_stop
+            data:
+              value: 100
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_charge_allowance
+            data:
+              value: 2500
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_export_tolerance
+            data:
+              value: 150
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_export_grace
+            data:
+              value: 60
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_export_ticks
+            data:
+              value: 0
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_reprobe_seconds
+            data:
+              value: 900
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_failsafe_pct
+            data:
+              value: 0
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_meter_tolerance
+            data:
+              value: 100
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_settle_seconds
+            data:
+              value: 12
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_max_step_pct
+            data:
+              value: 10
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_delivery_short
+            data:
+              value: 0
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_start_grace
+            data:
+              value: 120
+            continue_on_error: true
+      - action: system_log.write
+        data:
+          level: info
+          logger: opendtu.zero_export
+          message: >-
+            DEFAULTS: EMS helpers set to the documented values - bias 20 W,
+            max charge 2500 W, allowance 2500 W, tolerance 150 W, grace 60 s,
+            re-probe 900 s, meter tolerance 100 W, settle 12 s, max step 10 %,
+            SoC stop 100 %, start grace 120 s, manual -1.
 
 
 # =============================================================================
@@ -997,7 +1135,8 @@ automation:
 
 
 # =============================================================================
-# 7) STARTUP MARKER - lets the loop stay in STARTING after a restart
+# 7) STARTUP MARKER - the start time, and the documented defaults on a fresh
+#    installation
 # =============================================================================
   - id: opendtu_ems_boot
     alias: "OpenDTU EMS boot"
@@ -1005,16 +1144,70 @@ automation:
       Records the Home Assistant start time. sensor.ems_mode stays STARTING for
       "EMS start grace" seconds afterwards, so that neither half-initialised
       sensors nor an ESS that is still booting can cause a wrong limit write.
+      On the very first start after the installation it also applies the
+      documented helper defaults (script.ems_set_defaults), because Home
+      Assistant creates an input_number without an "initial" value at its
+      minimum, and it warns when "EMS max charge power" is still 0 W.
     mode: single
     triggers:
       - trigger: homeassistant
         event: start
     actions:
+      # ems_started_at is only ever written below, so it is still 0 exactly on
+      # the first start after the package was installed.
+      - variables:
+          first_boot: >-
+            {{- (state_attr('input_datetime.ems_started_at', 'timestamp')
+                 | float(0)) == 0 -}}
+      # record the start time first: whatever the helpers still hold, the loop
+      # is in STARTING from the first moment of this start
       - action: input_datetime.set_datetime
         target:
           entity_id: input_datetime.ems_started_at
         data:
           timestamp: "{{ now().timestamp() }}"
+      # A fresh installation must not run on empty helpers (they are created at
+      # their minimum: 0 W charge power, 0 W bias, 0 s grace, ...). Seed the
+      # documented defaults once - never again, so the tuning and the learned
+      # charge allowance survive every later restart.
+      - if:
+          - condition: template
+            value_template: "{{ first_boot }}"
+        then:
+          - action: system_log.write
+            data:
+              level: info
+              logger: opendtu.zero_export
+              message: >-
+                FIRST START: the EMS helpers are still empty - applying the
+                documented defaults (script.ems_set_defaults).
+          - action: script.ems_set_defaults
+      # "EMS max charge power = 0" is a legitimate choice (zero export, never
+      # charge from PV) - but it is also what an installation from before 1.6.0
+      # was left with, and then the battery is never charged from the array.
+      # Nothing can be told at night, so this only speaks while PV is possible.
+      - if:
+          - condition: template
+            value_template: >-
+              {{- (states('input_number.ems_max_charge_power') | float(0)) == 0
+                  and (states('sensor.solarleistung_gesamt') | float(0)) > 200 -}}
+        then:
+          - action: persistent_notification.create
+            data:
+              notification_id: opendtu_ems_defaults
+              title: OpenDTU EMS - no charge power configured
+              message: >-
+                "EMS max charge power" is 0 W, so the loop never asks the array
+                for charge power and the battery is only charged from the grid,
+                if at all. Installations from before 1.6.0 start like this,
+                because Home Assistant creates the helpers empty. Set it to
+                min(DVCC max charge current, BMS CCL) x battery voltage
+                (2500 W for 50 A x 50 V), or run the action
+                script.ems_set_defaults to apply every documented default.
+        else:
+          - action: persistent_notification.dismiss
+            data:
+              notification_id: opendtu_ems_defaults
       - action: system_log.write
         data:
           level: info
@@ -1062,11 +1255,15 @@ automation:
 #      exporting"): every export - the Victron ramp, a load switching off, the
 #      1 s meter lag - cut the array to house load + the charge power it was
 #      ALREADY taking, so the charge power could never grow. The target is now
-#      purely feed forward: house load + allowed charge power + bias.
+#      purely feed forward: house load + allowed charge power - bias.
+#    1.6.0 fixed the SIGN of that bias: it is subtracted, so the loop holds a
+#    small grid IMPORT as documented instead of a small export of the same size
+#    (before, raising "EMS grid bias" made the export bigger instead of safer).
 #
 # D) HOW TO TEST THE FAIL-SAFE
 #    1. turn on "EMS test - simulate battery loss" -> sensor.ems_mode must
-#       become NO_BATTERY, the limit must drop to load + 20 W, grid stays >= 0
+#       become NO_BATTERY, the limit must drop to the house load (load - 20 W),
+#       grid stays >= 0
 #    2. kill the PRIMARY meter only (unplug / power off the Shelly) -> the mode
 #       must STAY FULL, the "source" attribute of sensor.ems_grid_power must
 #       become "victron" and the loop keeps regulating on the backup meter.
@@ -1177,8 +1374,8 @@ automation:
 #
 # L) BATTERY FIRST vs ZERO EXPORT - the charge allowance
 #
-#    The target is feed forward:  PV = house load + allowed charge power + bias
-#    (solar + grid + allowance - battery power + bias). It contains no measured
+#    The target is feed forward:  PV = house load + allowed charge power - bias
+#    (solar + grid + allowance - battery power - bias). It contains no measured
 #    export, so the array is never cut because something ELSE was exporting for
 #    a moment. The only open question is how much charge power the battery can
 #    really take. That is what "EMS charge allowance" answers:

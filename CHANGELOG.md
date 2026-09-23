@@ -5,7 +5,51 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.6.0] - 2026-09-23
+
+### Added
+
+- `script.ems_set_defaults`: the documented defaults of all 16 tuning helpers in one place,
+  callable from Developer tools → Actions at any time.
+
+### Fixed
+
+- **The grid bias was applied with the wrong sign.** The target was
+  `solar + grid + push + bias`, so the loop settled at `-(push + bias)`: a permanent
+  **export** of about `EMS grid bias` watts, the opposite of what the README, the fail-safe
+  table and the helper description promise (“the grid stays at +20 W”). Raising the bias made
+  that export bigger instead of safer. The bias is now **subtracted**, so the steady state is a
+  small grid **import** of `EMS grid bias` watts:
+  `PV = house load + allowed charge power - bias`. `NO_BATTERY` produces `house load - bias`,
+  the export triggers sit `2 x bias` further away, and nothing else changes: the charge
+  allowance learning, the tolerance band and the fail-safe ladder work as before.
+- **A fresh installation ran with empty helpers.** Home Assistant creates an `input_number`
+  that has no `initial` value at its **minimum** and only restores a value that already exists,
+  so every helper started at its floor: `EMS max charge power` 0 W, `EMS charge allowance`
+  0 W, `EMS grid bias` 0 W, `EMS start grace` 0 s, `EMS max step` 1 %. The array then only
+  ever covered the house load — the “the sun is cut although the battery could take it”
+  symptom, on a brand new installation. `automation.opendtu_ems_boot` now calls the new
+  `script.ems_set_defaults` once, on the first start after the install (`ems_started_at` is
+  still empty then). `initial` was deliberately **not** used: it overrides the restore and
+  would reset the user's tuning *and* the learned allowance on every restart. Installations
+  that were created before 1.6.0 and never set by hand get a persistent notification while
+  `EMS max charge power` is 0 W and the sun is up.
+- **`binary_sensor.ems_degraded` alarmed in a standby state.** The “which meter is in use”
+  clause was evaluated in every mode, so both meters going stale at night (`source: none`
+  while the mode is `NIGHT`) raised a problem alarm — contradicting NOTES §K and the v1.3.0
+  changelog, which both promise that the standby states stay silent. The clause is now only
+  judged while the loop is really regulating (`FULL`).
+
+### Documentation
+
+- `README.md`: new section **Settings: what every value does** — the control law in one
+  formula, every helper with its range, its default, what it does and what changes when you
+  raise or lower it, a worked example (3700 W array / 738 W house / 2500 W charge power) and
+  the reason the helpers are created empty. The mode list of `sensor.ems_mode`, the entity
+  table and the fail-safe table were corrected at the same time.
+- `docs/CONFIGURATION.md`: the mode table, the design-decision formula and the
+  `binary_sensor.ems_degraded` description corrected; the helper tables now state where the
+  defaults come from.
 
 ### Documentation
 

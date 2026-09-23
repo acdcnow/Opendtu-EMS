@@ -14,17 +14,18 @@ Everything the package creates, what it means and how to tune it.
 
 | Mode | Entered when | Target written |
 |---|---|---|
-| `FULL` | SoC and battery power are fresh and plausible, at least one grid meter is alive, solar is readable, at least one inverter is reachable | `house load + allowed charge power + bias`, clamped to the reachable capacity. The allowed charge power is `EMS max charge power` capped by the learned `EMS charge allowance`; the measured export is not part of the formula |
+| `FULL` | SoC and battery power are fresh and plausible, at least one grid meter is alive, solar is readable, at least one inverter is reachable | `house load + allowed charge power - bias`, clamped to the reachable capacity. The allowed charge power is `EMS max charge power` capped by the learned `EMS charge allowance`; the measured export is not part of the formula |
 | `STARTING` | less than `EMS start grace` (default 120 s) since the Home Assistant start event | nothing — waiting for the first sensor values and for the ESS to boot |
 | `NIGHT` | `sun.sun` is `below_horizon` **and** PV is below 200 W | nothing — solar-powered inverters sleep, this is a normal standby state |
 | `DTU_BLIND` | **no** inverter limit entity is readable (OpenDTU powered off, MQTT broker down, entity ids changed) | nothing — the loop stops writing and the watchdog raises *no inverter reachable* |
 | `GRID_BLIND` | neither grid meter has a value and a recent update, **or** the solar sensor is not readable while inverters are reachable (the house load cannot be computed) | `input_number.ems_failsafe_pct` (default 0 %) |
-| `NO_BATTERY` | SoC or battery power missing / stale (> 120 s power, > 300 s SoC) / outside 0–100 %, or the test switch is on | `load + bias` (zero export only — the charge term is dropped) |
+| `NO_BATTERY` | SoC or battery power missing / stale (> 120 s power, > 300 s SoC) / outside 0–100 %, or the test switch is on | `load - bias` (zero export only — the charge term is dropped) |
 | `OFF` | `input_boolean.ems_enabled` is off | nothing is written |
 
-Mode is published as `sensor.ems_mode`; `binary_sensor.ems_degraded` is on for everything
-except `FULL`/`OFF` and also when the grid value comes from the backup meter or the two
-meters disagree.
+Mode is published as `sensor.ems_mode`; `binary_sensor.ems_degraded` is on for every mode except
+`FULL`, `OFF`, `NIGHT` and `STARTING`, and, **while the mode is `FULL`**, also when the grid value
+comes from the backup meter or when the two meters disagree. The meter source is deliberately not
+judged in a standby state, so both meters going stale at night does not raise an alarm.
 
 > The EMS entities (helpers, sensors, script, automations) are plain Home Assistant entities.
 > They exist regardless of OpenDTU — a DTU that is switched off only makes the
@@ -34,6 +35,14 @@ meters disagree.
 ---
 
 ## Helpers
+
+The helpers are **created empty**: Home Assistant creates an `input_number` that has no
+`initial` value at its *minimum*, and only restores a value that already exists. On a fresh
+installation `automation.opendtu_ems_boot` therefore applies the defaults below once
+(`script.ems_set_defaults`); later restarts never touch them again, so your tuning and the
+learned charge allowance survive. The "Default" column is what you should see after the first
+start, not something Home Assistant sets by itself. See
+[README § Settings](../README.md#settings-what-every-value-does).
 
 ### Switches
 
@@ -48,7 +57,7 @@ meters disagree.
 | Helper | Default | Unit | Meaning / tuning |
 |---|---|---|---|
 | `ems_manual_pct` | -1 | % | `-1` = automatic. `0…100` writes this percentage to all inverters, ignoring every sensor. `0` therefore switches the inverters off. |
-| `ems_grid_bias` | 20 | W | The grid target. The loop aims at a small *import* so that it never sits exactly on the export boundary. Raise if your meter is noisy. |
+| `ems_grid_bias` | 20 | W | The grid target. It is subtracted from the PV target, so the loop aims at a small *import* and never sits exactly on the export boundary. Raise if your meter is noisy (the array then produces that much less). |
 | `ems_hysteresis_pct` | 2 | % | Minimum change before a write happens. Raise to reduce writes, lower to react to smaller deviations. |
 | `ems_max_charge_power` | 2500 | W | The charge power the array may feed the battery with. Derive it as `min(DVCC max A, BMS CCL) × battery voltage`. The learned `EMS charge allowance` can only go below it. |
 | `ems_soc_stop` | 100 | % | At/above this SoC the EMS stops *asking* for charge power and only covers the house load. It counts only while the battery is measurably not charging, so a wrong or stuck SoC cannot cut the array. `100` = never stop. |
@@ -111,11 +120,14 @@ Both meters are read every cycle.
 The target is feed forward:
 
 ```
-target_PV = solar + grid + (allowed charge power − battery power) + bias
+target_PV = solar + grid + (allowed charge power − battery power) - bias
 ```
 
 Since `solar + grid` is the house load plus what the battery currently takes, this is
-`house load + allowed charge power + bias`. There is no feedback of the measured export, and
+`house load + allowed charge power - bias`. The bias is *subtracted* on purpose: the loop aims
+at a small grid **import**, not at a small export (until 1.6.0 the sign was the other way round,
+which made the loop hold a permanent export of the same size). There is no feedback of the
+measured export, and
 that is deliberate: in 1.4.x the charge term was dropped whenever the grid exported, so
 every export — the Victron ramp, a load switching off, a lagging meter — cut the array to
 `house load + the charge power it was already taking`, which meant the charge power could

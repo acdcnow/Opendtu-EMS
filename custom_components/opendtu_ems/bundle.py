@@ -24,7 +24,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-# the package header carries "#  version 1.5.1  ·  2026-09-20  ·  see CHANGELOG.md"
+# the package header carries "#  version 1.6.0  ·  2026-09-23  ·  see CHANGELOG.md"
 VERSION_RE = re.compile(r"^#\s*version\s+(\d+\.\d+\.\d+)", re.MULTILINE)
 PACKAGES_RE = re.compile(r"^\s*packages\s*:", re.MULTILINE)
 

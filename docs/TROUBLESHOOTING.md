@@ -16,7 +16,7 @@ Work through the symptom table first, then the detail sections.
 | Limit stays at `0 %` | mode, `input_number.ems_failsafe_pct` | `GRID_BLIND` fail-safe, or `ems_manual_pct = 0` |
 | Limit never changes | trace of the loop, `input_datetime.ems_last_apply` | condition blocked (settle/hysteresis) or the loop errors |
 | Exports after load steps | `history` of `sensor.ems_grid_power` | `EMS max step` too high / `EMS settle time` too short |
-| **PV is cut although the battery could take it** | `input_number.ems_charge_allowance`, attributes `allowance`/`charge_push` of `sensor.ems_limit_target`, `input_number.ems_export_ticks` | the loop measured that the battery is not taking the offer — see [below](#pv-is-cut-although-the-battery-could-take-it) |
+| **PV is cut although the battery could take it** | `input_number.ems_charge_allowance`, attributes `allowance`/`charge_push` of `sensor.ems_limit_target`, `input_number.ems_export_ticks` | the loop measured that the battery is not taking the offer — see [below](#pv-is-cut-although-the-battery-could-take-it) — or the helpers were never set (`EMS max charge power` = 0 W), see [below](#the-array-only-ever-covers-the-house-load) |
 | Battery stops charging near the top | `EMS SoC stop charging`, `input_number.ems_charge_allowance`, BMS CCL | the SoC stop is at 100 % by default; if `charge allowance` is at the limit, the BMS is the bottleneck (CV phase) |
 | Charging is slow | DVCC, BMS CCL, `EMS max charge power`, `ems_charge_allowance` | charge current limited by the Victron side, or the learned allowance is below the maximum |
 | Redistribution does not happen | `active` attribute | the offline inverter's limit entity stays available → add power sensors |
@@ -254,7 +254,7 @@ This was a real bug up to 1.4.x and is fixed in 1.5.0. Understand the numbers fi
 check the ones on your system:
 
 ```
-limit target = house load + allowed charge power + bias
+limit target = house load + allowed charge power - bias
 allowed charge power = min(EMS max charge power, EMS charge allowance)
 ```
 
@@ -272,6 +272,25 @@ allowed charge power = min(EMS max charge power, EMS charge allowance)
      check DVCC and the CCL, and watch `bat` in the verbose log
 3. **Check `EMS export ticks`.** It counts the 15 s ticks of the current export run. Values at
    or above the grace mean the allowance is being reduced further.
+
+## The array only ever covers the house load
+
+Symptom: the `charge_push` attribute of `sensor.ems_limit_target` is 0, the limit sits around
+`house load / capacity`, and the battery is never charged from the array although the sun is up
+and the SoC is low.
+
+Cause: the helpers were never set. Home Assistant creates an `input_number` without an
+`initial` value at its **minimum**, so a fresh installation starts with `EMS max charge power`
+0 W and `EMS charge allowance` 0 W. The offer is `min(the two)` = 0 W, and nothing in the loop
+can recover from it by itself, because the allowance learning resets the allowance to
+`EMS max charge power`, which is 0 W as well.
+
+Fix: set `input_number.ems_max_charge_power` to `min(DVCC max charge current, BMS CCL) x battery
+voltage` (2500 W for 50 A x 50 V), or run the action `script.ems_set_defaults` to apply every
+documented default at once. Since **1.6.0** `automation.opendtu_ems_boot` does this by itself on
+the first start after the installation and raises a *no charge power configured* notification
+when it still finds 0 W while the sun is up, so this state should now only appear on
+installations that were created before 1.6.0.
 4. **Check the SoC.** With `EMS SoC stop charging = 100` the stop can only bite at 100 %, and
    even then only while the battery takes less than `EMS export tolerance`. A stuck SoC is
    therefore harmless. Lower the helper only on purpose.

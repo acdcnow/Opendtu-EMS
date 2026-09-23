@@ -8,5 +8,5 @@
   "integration_type": "helper",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/acdcnow/opendtu-ems/issues",
-  "version": "1.5.2"
+  "version": "1.6.0"
 }
