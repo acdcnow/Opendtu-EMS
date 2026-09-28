@@ -29,9 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- the switch is documented in `README.md`, `docs/CONFIGURATION.md`, `docs/DASHBOARD.md`,
-  `docs/INSTALL.md` and `docs/TROUBLESHOOTING.md` (new symptom row *the limit no longer follows
-  the grid*), and the ready-made dashboard view gained the *Automatic mode* switch.
+- the switch is documented in `README.md` (new *Manual override in detail* subsection and a note
+  in the control law), `docs/CONFIGURATION.md`, `docs/DASHBOARD.md`, `docs/INSTALL.md` and
+  `docs/TROUBLESHOOTING.md` (new symptom row *the limit no longer follows the grid*), and the
+  ready-made dashboard view gained the *Automatic mode* switch.
+- the wiki was updated for 1.7.0: `Home.md` (current-line banner, *What is new in 1.7.0*, the
+  upgrade note), the SDD (version banner, entity count, the control-law pseudocode, the write
+  gate, the defaults script and the helper data dictionary) and the Workflow Diagrams
+  (write-gate node).
 
 ## [1.6.0] - 2026-09-23
 

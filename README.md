@@ -100,6 +100,10 @@ measurement, not by an export that may be transient:
 3. **The SoC never throttles the array.** The only SoC effect is the stop above, and it is
    corroborated by the battery power. A stuck or badly calibrated SoC can waste nothing.
 
+A **manual override** (`EMS automatic mode` off) steps outside this law completely: the fixed
+`EMS manual limit` percentage is written instead. The fail-safe ladder still *reports* the
+degraded mode, but it does not override your manual value.
+
 The loop reacts to grid crossings (5 s debounce) plus a 15 s heartbeat, writes with a
 hysteresis of 2 %, re-asserts the limit every 180 s and, to cope with the Victron ramp,
 waits `EMS settle time` after every write and limits increases to `EMS max step` (decreases
@@ -289,6 +293,26 @@ Three consequences worth internalising:
 | `input_boolean.ems_automatic` | on | Automatic mode. | **off**: manual override — `EMS manual limit` is written to all inverters, every sensor is ignored, the charge-allowance learning is frozen and the watchdog stands down. The manual value is ignored while this switch is on. |
 | `input_boolean.ems_simulate_battery_loss` | off | Test switch for the fail-safe path: while it is on, the mode is forced to `NO_BATTERY`. | **on**: the array drops to `house load - bias`. Use it to prove that the loop degrades instead of exporting. |
 | `input_boolean.ems_verbose` | off | Writes one debug line per run (mode, grid with its source, solar, SoC, battery, inverters, capacity, written limit). | **on**: add the `logger` entry from [docs/INSTALL.md](docs/INSTALL.md#6-verify-the-first-runs) to see it. Turn it off again afterwards, it is one line per 15 s. |
+
+#### Manual override in detail
+
+`EMS automatic mode` **off** replaces the entire control law with one fixed number:
+
+* the value of `EMS manual limit` is written to **all** inverters on every loop run —
+  hysteresis, settle time and the 180 s re-assert are bypassed;
+* **every** sensor is ignored, including the fail-safe ladder: with the switch off the mode
+  still *reports* `GRID_BLIND` / `NO_BATTERY` / `DTU_BLIND`, but the written value stays the
+  manual percentage. That is deliberate — you asked for manual control;
+* the charge-allowance learning is frozen (`EMS charge allowance` keeps its last value);
+* the watchdog stands down, so no *fail-safe active* notification is raised while you work;
+* `0` switches the inverters off (handy for maintenance), `100` pins them to full power.
+
+The value is clamped to `0…100` in the template, so an out-of-range leftover cannot produce a
+negative percentage. Switch `EMS automatic mode` back **on** to hand control to the loop — the
+next run re-reads every sensor and resumes regulation within one cycle.
+
+> Since 1.7.0 automatic mode is a switch of its own. Before that the sentinel was `-1` in
+> `EMS manual limit`, so a manual percentage alone no longer activates the override.
 
 ### The charge power: how much of the array may run
 
