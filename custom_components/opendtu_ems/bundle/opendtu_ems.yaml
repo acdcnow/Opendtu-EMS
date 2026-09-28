@@ -1,6 +1,6 @@
 # =============================================================================
 #  OpenDTU  ·  Battery-first / zero-export EMS      (Home Assistant 2026.9)
-#  version 1.6.0  ·  2026-09-23  ·  see CHANGELOG.md
+#  version 1.7.0  ·  2026-09-28  ·  see CHANGELOG.md
 # -----------------------------------------------------------------------------
 #  Drop-in replacement for the automation
 #  "OpenDTU: Battery-First Aggressive EMS (Math-Based)".
@@ -103,6 +103,15 @@ input_boolean:
     name: EMS enabled
     icon: mdi:transmission-tower-export
     initial: true
+  # ON (default) = the loop regulates by itself. OFF = manual override: "EMS
+  # manual limit" is written to all inverters, every sensor is ignored, the
+  # charge-allowance learning is frozen and the watchdog stands down.
+  # A switch instead of the old "-1" sentinel, so the manual percentage is a
+  # plain 0..100 value (0 = inverters off).
+  ems_automatic:
+    name: EMS automatic mode
+    icon: mdi:auto-mode
+    initial: true
   ems_simulate_battery_loss:
     name: EMS test - simulate battery loss
     icon: mdi:battery-off-outline
@@ -111,10 +120,11 @@ input_boolean:
     icon: mdi:script-text-play-outline
 
 input_number:
-  # -1 = manual override off. 0..100 = write this percentage to all inverters.
+  # The limit written to all inverters while "EMS automatic mode" is OFF.
+  # Ignored (and harmless) while automatic mode is on; 0 = inverters off.
   ems_manual_pct:
     name: EMS manual limit
-    min: -1
+    min: 0
     max: 100
     step: 1
     mode: box
@@ -526,12 +536,14 @@ template:
           {%- set cap = states('sensor.ems_inverter_capacity') | float(0) -%}
           {%- set cur = state_attr('sensor.ems_inverter_capacity', 'current_pct') | float(-1) -%}
           {%- set mode = states('sensor.ems_mode') -%}
-          {%- set manual = states('input_number.ems_manual_pct') | float(-1) -%}
+          {%- set auto = is_state('input_boolean.ems_automatic', 'on') -%}
+          {%- set manual = states('input_number.ems_manual_pct') | float(0) -%}
           {%- set grid = states('sensor.ems_grid_power') | float(0) -%}
           {%- set solar = states('sensor.solarleistung_gesamt') | float(0) -%}
           {%- set bias = states('input_number.ems_grid_bias') | float(20) -%}
-          {%- if manual >= 0 -%}
-            {{ [manual, 100] | min }}
+          {#- a manual override wins over every sensor, including the fail-safe -#}
+          {%- if not auto -%}
+            {{ [[manual, 0] | max, 100] | min }}
           {%- elif mode in ['GRID_BLIND', 'OFF'] or cap == 0 -%}
             {{ states('input_number.ems_failsafe_pct') | float(0) }}
           {%- else -%}
@@ -650,7 +662,7 @@ script:
             target:
               entity_id: input_number.ems_manual_pct
             data:
-              value: -1
+              value: 0
             continue_on_error: true
           - action: input_number.set_value
             target:
@@ -742,6 +754,12 @@ script:
             data:
               value: 120
             continue_on_error: true
+      # automatic mode is a documented default as well: a reset must never leave
+      # the loop sitting in a hand-set manual override
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.ems_automatic
+        continue_on_error: true
       - action: system_log.write
         data:
           level: info
@@ -750,7 +768,7 @@ script:
             DEFAULTS: EMS helpers set to the documented values - bias 20 W,
             max charge 2500 W, allowance 2500 W, tolerance 150 W, grace 60 s,
             re-probe 900 s, meter tolerance 100 W, settle 12 s, max step 10 %,
-            SoC stop 100 %, start grace 120 s, manual -1.
+            SoC stop 100 %, start grace 120 s, automatic mode on, manual 0 %.
 
 
 # =============================================================================
@@ -819,7 +837,7 @@ automation:
       # =====================================================================
       - variables:
           lrn_ok: >-
-            {{- states('input_number.ems_manual_pct') | float(-1) < 0
+            {{- is_state('input_boolean.ems_automatic', 'on')
                 and states('sensor.ems_mode') in ['FULL', 'NIGHT']
                 and has_value('sensor.serialbattery_seplos_leistung')
                 and has_value('input_number.ems_charge_allowance') -}}
@@ -946,7 +964,7 @@ automation:
       - if:
           - condition: template
             value_template: >-
-              {%- set manual = states('input_number.ems_manual_pct') | float(-1) -%}
+              {%- set auto = is_state('input_boolean.ems_automatic', 'on') -%}
               {%- set cur = state_attr('sensor.ems_inverter_capacity', 'current_pct') | float(-1) -%}
               {%- set new = target_pct | float(-1) -%}
               {%- set hyst = states('input_number.ems_hysteresis_pct') | float(2) -%}
@@ -957,7 +975,7 @@ automation:
               {%- set emergency = (states('sensor.ems_grid_power') | float(0)) < -500 -%}
               {%- set changed = new < 0 or cur < 0 or ((cur - new) | abs >= hyst) -%}
               {{ new >= 0 and
-                 (manual >= 0 or refresh or (changed and (idle >= settle or emergency))) }}
+                 (not auto or refresh or (changed and (idle >= settle or emergency))) }}
         then:
           - if:
               - condition: state
@@ -1007,8 +1025,9 @@ automation:
         entity_id: input_boolean.ems_enabled
         state: "on"
       # never fight the manual override
-      - condition: template
-        value_template: "{{ states('input_number.ems_manual_pct') | float(-1) < 0 }}"
+      - condition: state
+        entity_id: input_boolean.ems_automatic
+        state: "on"
     actions:
       # last_ts == 0 means "never written yet" -> the loop writes within 30 s,
       # so this is not treated as stale (avoids a spurious alarm after boot).

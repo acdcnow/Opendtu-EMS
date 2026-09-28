@@ -49,6 +49,7 @@ start, not something Home Assistant sets by itself. See
 | Helper | Default | Meaning |
 |---|---|---|
 | `input_boolean.ems_enabled` | on | master switch; off = no writes at all |
+| `input_boolean.ems_automatic` | on | automatic mode; off = manual override: `ems_manual_pct` is written to all inverters, every sensor is ignored, the learning is frozen and the watchdog stands down |
 | `input_boolean.ems_simulate_battery_loss` | off | forces `NO_BATTERY` to test the fail-safe |
 | `input_boolean.ems_verbose` | off | writes a diagnostic line per run to the log |
 
@@ -56,7 +57,7 @@ start, not something Home Assistant sets by itself. See
 
 | Helper | Default | Unit | Meaning / tuning |
 |---|---|---|---|
-| `ems_manual_pct` | -1 | % | `-1` = automatic. `0…100` writes this percentage to all inverters, ignoring every sensor. `0` therefore switches the inverters off. |
+| `ems_manual_pct` | 0 | % | The limit written to all inverters while `EMS automatic mode` is off; ignored while it is on. `0` therefore switches the inverters off. |
 | `ems_grid_bias` | 20 | W | The grid target. It is subtracted from the PV target, so the loop aims at a small *import* and never sits exactly on the export boundary. Raise if your meter is noisy (the array then produces that much less). |
 | `ems_hysteresis_pct` | 2 | % | Minimum change before a write happens. Raise to reduce writes, lower to react to smaller deviations. |
 | `ems_max_charge_power` | 2500 | W | The charge power the array may feed the battery with. Derive it as `min(DVCC max A, BMS CCL) × battery voltage`. The learned `EMS charge allowance` can only go below it. |
@@ -248,6 +249,7 @@ entities:
   - entity: sensor.ems_inverter_capacity
   - entity: binary_sensor.ems_degraded
   - entity: input_boolean.ems_enabled
+  - entity: input_boolean.ems_automatic
   - entity: input_number.ems_manual_pct
   - entity: input_datetime.ems_last_apply
 ```

@@ -13,8 +13,9 @@ Work through the symptom table first, then the detail sections.
 | `sensor.ems_mode` is `DTU_BLIND` | `sensor.ems_inverter_capacity` = 0 | OpenDTU off, MQTT down, ids changed |
 | `sensor.ems_mode` is `GRID_BLIND` | `sensor.ems_grid_power` → `source`, `sensor.solarleistung_gesamt` | both meters dead, renamed or stale — or the solar sensor is gone |
 | `sensor.ems_mode` is `NO_BATTERY` | `sensor.serialbattery_seplos_*` | SoC/power sensor unavailable, stale or out of range |
-| Limit stays at `0 %` | mode, `input_number.ems_failsafe_pct` | `GRID_BLIND` fail-safe, or `ems_manual_pct = 0` |
+| Limit stays at `0 %` | mode, `input_number.ems_failsafe_pct` | `GRID_BLIND` fail-safe, or automatic mode off with `ems_manual_pct = 0` |
 | Limit never changes | trace of the loop, `input_datetime.ems_last_apply` | condition blocked (settle/hysteresis) or the loop errors |
+| The limit no longer follows the grid | `input_boolean.ems_automatic` | manual override is active (switch off): the loop writes `ems_manual_pct` and ignores every sensor |
 | Exports after load steps | `history` of `sensor.ems_grid_power` | `EMS max step` too high / `EMS settle time` too short |
 | **PV is cut although the battery could take it** | `input_number.ems_charge_allowance`, attributes `allowance`/`charge_push` of `sensor.ems_limit_target`, `input_number.ems_export_ticks` | the loop measured that the battery is not taking the offer — see [below](#pv-is-cut-although-the-battery-could-take-it) — or the helpers were never set (`EMS max charge power` = 0 W), see [below](#the-array-only-ever-covers-the-house-load) |
 | Battery stops charging near the top | `EMS SoC stop charging`, `input_number.ems_charge_allowance`, BMS CCL | the SoC stop is at 100 % by default; if `charge allowance` is at the limit, the BMS is the bottleneck (CV phase) |
@@ -350,8 +351,9 @@ update in place instead of piling up. They disappear when you dismiss them.
 * attributes `allowance` and `charge_push` of `sensor.ems_limit_target` → the same two numbers
   next to the target percentage.
 * `input_boolean.ems_simulate_battery_loss` → tests the `NO_BATTERY` path.
-* `input_number.ems_manual_pct` → writes a fixed percentage, ignoring all sensors
-  (`-1` restores automatic operation).
+* `input_boolean.ems_automatic` → off switches to the manual override, on hands control back to
+  the loop. While it is off, `input_number.ems_manual_pct` is written to all inverters and every
+  sensor is ignored.
 * `input_datetime.ems_last_apply` → history shows exactly when and how often the loop wrote.
 
 ## Starting over

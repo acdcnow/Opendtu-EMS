@@ -161,9 +161,10 @@ BASE = {
     "sensor.serialbattery_seplos_ladestand": "85",
     "sensor.serialbattery_seplos_leistung": "1200",
     "input_boolean.ems_enabled": "on",
+    "input_boolean.ems_automatic": "on",
     "input_boolean.ems_simulate_battery_loss": "off",
     "input_boolean.ems_verbose": "off",
-    "input_number.ems_manual_pct": "-1",
+    "input_number.ems_manual_pct": "0",
     "input_number.ems_grid_bias": "20",
     "input_number.ems_hysteresis_pct": "2",
     "input_number.ems_max_charge_power": "2500",
@@ -235,8 +236,19 @@ CONTROL_CASES = {
                            "GRID_BLIND", "none", None, 4700, 3, 0.0, True),
     "battery data lost": ({**BASE, "sensor.serialbattery_seplos_leistung": "unknown"},
                           "NO_BATTERY", "shelly", -234, 4700, 3, 58.4, True),
-    "manual 50 %": ({**BASE, "input_number.ems_manual_pct": "50"},
+    "manual 50 %": ({**BASE, "input_boolean.ems_automatic": "off",
+                     "input_number.ems_manual_pct": "50"},
                     "FULL", "shelly", -234, 4700, 3, 50.0, True),
+    # the manual override wins over every sensor, even over the fail-safe
+    "manual override beats fail-safe": ({**BASE,
+                                         "input_boolean.ems_automatic": "off",
+                                         "input_number.ems_manual_pct": "35",
+                                         S: "unavailable", V: "unavailable",
+                                         "sensor.solarleistung_gesamt": "unavailable"},
+                                        "GRID_BLIND", "none", None, 4700, 3, 35.0, True),
+    # ... and the manual value is ignored while automatic mode is on
+    "manual value ignored in automatic": ({**BASE, "input_number.ems_manual_pct": "35"},
+                                          "FULL", "shelly", -234, 4700, 3, 86.1, True),
     "kill switch off": ({**BASE, "input_boolean.ems_enabled": "off"},
                         "OFF", "shelly", -234, 4700, 3, 0.0, None),
     # redistribution: one inverter off
@@ -297,7 +309,8 @@ DELIVERY_CASES = {
                "sensor.serialbattery_seplos_leistung": "-100"}, 0, False, 2881),
     "low sun": ({**BASE, S: "500", V: "500",
                  "sensor.solarleistung_gesamt": "150"}, 8, False, 1932),
-    "manual 5 % (expected < 300 W)": ({**BASE, "input_number.ems_manual_pct": "5"},
+    "manual 5 % (expected < 300 W)": ({**BASE, "input_boolean.ems_automatic": "off",
+                                       "input_number.ems_manual_pct": "5"},
                                       100, False, 235),
 }
 
@@ -723,7 +736,8 @@ def main(argv: list[str]) -> int:
              {**EXPORTING, "sensor.ems_mode": "NIGHT", "input_number.ems_export_ticks": "3"},
              lrn_tick, "False")
     lrn_cond("tick branch off on manual override",
-             {**EXPORTING, "input_number.ems_manual_pct": "50"}, lrn_tick, "False")
+             {**EXPORTING, "input_boolean.ems_automatic": "off",
+              "input_number.ems_manual_pct": "50"}, lrn_tick, "False")
     lrn_cond("tick branch off when the battery data is gone",
              {**EXPORTING, "sensor.serialbattery_seplos_leistung": "unknown"},
              lrn_tick, "False")

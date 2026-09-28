@@ -7,14 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-28
+
 ### Added
 
 - the dashboard gained a *restore defaults* chip (tap → confirmation → `script.ems_set_defaults`).
+- `input_boolean.ems_automatic`: automatic mode is a **switch** instead of the `-1` sentinel of
+  `EMS manual limit`. ON (default) = the loop regulates; OFF = manual override — the value of
+  `EMS manual limit` is written to all inverters, every sensor is ignored, the charge-allowance
+  learning is frozen and the watchdog stands down.
 
 ### Changed
 
+- `input_number.ems_manual_pct` is now a plain `0…100` helper (`min: 0`, default `0` =
+  inverters off), so its meaning no longer depends on a negative magic value. It is ignored
+  while `EMS automatic mode` is on and is only written while that switch is off. A leftover `-1`
+  from an older installation is clamped to `0` by Home Assistant and is harmless as long as
+  automatic mode stays on. `script.ems_set_defaults` turns automatic mode back on as well.
 - CI: `actions/setup-python` v5 → v7. v5 still targeted Node.js 20 and produced a deprecation
   warning on every run.
+
+### Documentation
+
+- the switch is documented in `README.md`, `docs/CONFIGURATION.md`, `docs/DASHBOARD.md`,
+  `docs/INSTALL.md` and `docs/TROUBLESHOOTING.md` (new symptom row *the limit no longer follows
+  the grid*), and the ready-made dashboard view gained the *Automatic mode* switch.
 
 ## [1.6.0] - 2026-09-23
 

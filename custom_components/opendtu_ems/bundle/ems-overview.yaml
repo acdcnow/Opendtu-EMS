@@ -271,8 +271,10 @@ cards:
         entities:
           - entity: input_boolean.ems_enabled
             name: EMS active
+          - entity: input_boolean.ems_automatic
+            name: Automatic mode
           - entity: input_number.ems_manual_pct
-            name: Manual limit (-1 = auto)
+            name: Manual limit (automatic off)
           - entity: input_boolean.ems_simulate_battery_loss
             name: Test - simulate battery loss
           - entity: input_number.ems_grid_bias

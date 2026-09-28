@@ -140,12 +140,12 @@ Additionally:
 | `sensor.ems_limit_target` | the percentage to write, attributes `mode`, `grid`, `solar`, `active`, `capacity`, `allowance` (W the battery may take), `charge_push` (W asked from the array) |
 | `binary_sensor.ems_degraded` | on when the system runs degraded: a non-`FULL` mode, or a grid reading that comes from the backup meter / two meters that disagree (only judged while the mode is `FULL`) |
 | `script.ems_apply` | writes one percentage to all governed inverters in parallel |
-| `script.ems_set_defaults` | restores the documented defaults of all 16 tuning helpers |
+| `script.ems_set_defaults` | restores the documented defaults of all 16 tuning helpers and switches automatic mode back on |
 | `automation.opendtu_ems_loop` | the control loop |
 | `automation.opendtu_ems_watchdog` | fail-safe + capacity/delivery monitoring |
 | `automation.opendtu_ems_boot` | records the start time, so the loop stays `STARTING` after a restart |
 
-Plus 21 helpers (3 switches, 16 numbers, 2 date/times) see
+Plus 22 helpers (4 switches, 16 numbers, 2 date/times) see
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Requirements
@@ -286,6 +286,7 @@ Three consequences worth internalising:
 | Helper | Default | What it does | If you change it |
 |---|---|---|---|
 | `input_boolean.ems_enabled` | on | Master switch. | **off**: the mode becomes `OFF` and nothing is written at all, neither limits nor fail-safe writes. The inverters keep their last limit until the DTU or the inverter reboots, then fall back to their persistent limit. |
+| `input_boolean.ems_automatic` | on | Automatic mode. | **off**: manual override — `EMS manual limit` is written to all inverters, every sensor is ignored, the charge-allowance learning is frozen and the watchdog stands down. The manual value is ignored while this switch is on. |
 | `input_boolean.ems_simulate_battery_loss` | off | Test switch for the fail-safe path: while it is on, the mode is forced to `NO_BATTERY`. | **on**: the array drops to `house load - bias`. Use it to prove that the loop degrades instead of exporting. |
 | `input_boolean.ems_verbose` | off | Writes one debug line per run (mode, grid with its source, solar, SoC, battery, inverters, capacity, written limit). | **on**: add the `logger` entry from [docs/INSTALL.md](docs/INSTALL.md#6-verify-the-first-runs) to see it. Turn it off again afterwards, it is one line per 15 s. |
 
@@ -317,7 +318,7 @@ Three consequences worth internalising:
 | `input_number.ems_settle_seconds` | 0…120 (1) | 12 s | After every write the loop waits this long before it acts again, so it does not chase a Victron that is still ramping. Must stay **below 15 s** (the heartbeat), otherwise corrections only happen on the next heartbeat. | **Higher**: calmer, but corrections are slower. **Lower**: more responsive, more writes. An export above 500 W always bypasses it. |
 | `input_number.ems_max_step_pct` | 1…100 (1) | 10 % | Maximum **increase** per write, in percent of the reachable capacity. Decreases are always applied immediately. | **Higher**: the limit reaches its target faster after a load step, with bigger export transients while the ESS catches up. **Lower** (5 %): gentler, slower to converge. |
 | `input_number.ems_start_grace` | 0…900 (10) | 120 s | After every Home Assistant start the mode is `STARTING` for this long: nothing is written until the sensors and the ESS are up. | **Higher** if your Victron needs longer than two minutes to come up. `0` removes the protection. |
-| `input_number.ems_manual_pct` | -1…100 (1) | -1 | `-1` = automatic. Any value ≥ 0 writes that percentage to all inverters, ignores every sensor and freezes the allowance learning. | `0`: the inverters are switched off, but the loop keeps running and the watchdog stands down. Handy for maintenance. |
+| `input_number.ems_manual_pct` | 0…100 (1) | 0 | The percentage written to all inverters while `EMS automatic mode` is **off**; ignored while it is on. | **0**: the inverters are switched off, but the loop keeps running and the watchdog stands down. Handy for maintenance — remember to switch `EMS automatic mode` back on afterwards. |
 
 ### Diagnostics, not tuning
 
@@ -389,7 +390,8 @@ knowing:
 |---|---|
 | pause everything immediately | `input_boolean.ems_enabled` → off (no writes at all) |
 | test the "battery data lost" path | `input_boolean.ems_simulate_battery_loss` → on |
-| write a fixed limit by hand | `input_number.ems_manual_pct` → 0…100 (`-1` = automatic) |
+| write a fixed limit by hand | `input_boolean.ems_automatic` → off, then `input_number.ems_manual_pct` → 0…100 |
+| hand control back to the loop | `input_boolean.ems_automatic` → on |
 | put every tuning value back to the documented default | run the action `script.ems_set_defaults` |
 | see what the loop is doing | `sensor.ems_mode`, `sensor.ems_limit_target`, `sensor.ems_pv_delivery` |
 | see how much charge power the battery is offered | attribute `allowance` of `sensor.ems_limit_target`, `input_number.ems_charge_allowance` |

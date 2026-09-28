@@ -201,7 +201,8 @@ and `script.ems_set_defaults` puts the whole set back to these values at any tim
 | `input_number.ems_reprobe_seconds` | 900 s | how often the charge offer is probed upwards again |
 | `input_number.ems_failsafe_pct` | 0 % | `0` stops the inverters (no export possible) |
 | `input_number.ems_meter_tolerance` | 100 W | allowed difference between the two meters |
-| `input_number.ems_manual_pct` | -1 | `-1` = off, otherwise a fixed percentage |
+| `input_boolean.ems_automatic` | on | off = manual override (see `ems_manual_pct`) |
+| `input_number.ems_manual_pct` | 0 | fixed percentage, used while automatic mode is off |
 
 The remaining helpers are internal (`ems_charge_allowance`, `ems_export_ticks`,
 `ems_delivery_short`), are timestamps (`ems_last_apply`, `ems_started_at`) or are the
