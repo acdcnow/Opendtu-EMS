@@ -886,15 +886,20 @@ def main(argv: list[str]) -> int:
         print(f"  mode {mode:<10} loop-writes={writes:<6} degraded={degraded:<6} "
               f"{'OK' if not why else '!! ' + '; '.join(why)}")
 
-    print("\n== degraded sensor (mode + which meter is in use) ==")
-    # The meter source is only judged while the loop is really regulating: a
-    # standby state stays silent even when the primary meter is gone, which was
-    # a false alarm before 1.6.0 (both meters stale at night -> source "none").
+    print("\n== degraded sensor (fail-safe modes only) ==")
+    # Only the fail-safe modes are a problem. Which grid meter is in use is
+    # informational (the "grid_fallback" attribute) and never turns the sensor
+    # on: a fallback to the backup meter, or a permanent offset between the two
+    # meters, used to keep it on the whole day even though the loop regulated
+    # normally (fixed in 1.8.0).
     for mode, source, want in (("FULL", "shelly", False),
-                               ("FULL", "victron", True),
-                               ("FULL", "disagree", True),
-                               ("FULL", "none", True),
+                               ("FULL", "victron", False),
+                               ("FULL", "disagree", False),
+                               ("FULL", "none", False),
                                ("NO_BATTERY", "shelly", True),
+                               ("NO_BATTERY", "none", True),
+                               ("DTU_BLIND", "none", True),
+                               ("GRID_BLIND", "shelly", True),
                                ("STARTING", "none", False),
                                ("NIGHT", "shelly", False),
                                ("NIGHT", "victron", False),

@@ -75,7 +75,7 @@ package for you:
    (a custom integration is loaded at start-up only).
 3. Settings → Devices & services → *Add integration* → **OpenDTU Zero-Export EMS** → confirm.
    It writes `<config>/packages/opendtu_ems.yaml` and `<config>/opendtu_ems/ems-overview.yaml`
-   and reports the result as a notification and in `sensor.ems_bundle`.
+   and reports the result in `sensor.ems_bundle` (a notification only when something happened).
 4. Continue with step 2 in [2.2](#22-by-hand) below (the `packages:` key) — the integration
    tells you when it is missing — and then **restart** once more.
 

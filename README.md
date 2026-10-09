@@ -142,7 +142,7 @@ Additionally:
 | `sensor.ems_pv_delivery` | produced vs. commanded output in %, attributes `expected_w`, `actual_w` |
 | `sensor.ems_house_load` | house consumption in W, derived from `solar + grid - battery` |
 | `sensor.ems_limit_target` | the percentage to write, attributes `mode`, `grid`, `solar`, `active`, `capacity`, `allowance` (W the battery may take), `charge_push` (W asked from the array) |
-| `binary_sensor.ems_degraded` | on when the system runs degraded: a non-`FULL` mode, or a grid reading that comes from the backup meter / two meters that disagree (only judged while the mode is `FULL`) |
+| `binary_sensor.ems_degraded` | on only for the fail-safe modes (`DTU_BLIND`, `GRID_BLIND`, `NO_BATTERY`). Attributes `mode`, `grid_source` and `grid_fallback` show which meter is in use — a fallback to the backup meter or a disagreement between the two meters is **not** a problem |
 | `script.ems_apply` | writes one percentage to all governed inverters in parallel |
 | `script.ems_set_defaults` | restores the documented defaults of all 16 tuning helpers and switches automatic mode back on |
 | `automation.opendtu_ems_loop` | the control loop |
@@ -218,8 +218,10 @@ that package (and the ready-made dashboard view) inside itself and installs it f
    Existing files are **never replaced by setup**: the package is meant to be edited (section 1
    holds your entity ids), so only missing files are created. Is a newer package bundled, you get
    a notification and apply it yourself with the action `opendtu_ems.install_bundle`, which keeps
-   the current file as `.bak`. The result is shown as a notification and in `sensor.ems_bundle`
-   (installed version, action, `restart_required`, `update_available`).
+   the current file as `.bak`. The result is shown in `sensor.ems_bundle` (installed version,
+   action, `restart_required`, `update_available`) — and as a notification **only when something
+   happened** (a file was written, a newer one is bundled, or `packages:` is missing). A routine
+   restart notifies nobody.
 6. If the notification says that `packages:` is missing, add it once to `configuration.yaml`:
 
    ```yaml
@@ -331,7 +333,7 @@ next run re-reads every sensor and resumes regulation within one cycle.
 | Helper | Range (step) | Default | What it does | If you change it |
 |---|---|---|---|---|
 | `input_number.ems_grid_bias` | 0…200 (5) | 20 W | The grid target. It is *subtracted* from the target, so the loop aims at this much grid **import** while the array produces that much less. | **Higher**: more safety margin against export if your meter is noisy or has a small offset, at the cost of buying those watts. `0`: the loop sits exactly on the boundary between import and export, where it is most likely to keep switching. |
-| `input_number.ems_meter_tolerance` | 0…1000 (10) | 100 W | Allowed difference between the primary (Shelly) and the backup (Victron) meter. Beyond it the **smaller** value (the one showing more export) is used and `source` becomes `disagree`. | **Higher**: more tolerance for small permanent offsets between the two metering points, fewer `disagree` states. **Lower** (or 0): the source flips to `disagree` and `binary_sensor.ems_degraded` turns on for the slightest difference. |
+| `input_number.ems_meter_tolerance` | 0…1000 (10) | 100 W | Allowed difference between the primary (Shelly) and the backup (Victron) meter. Beyond it the **smaller** value (the one showing more export) is used and `source` becomes `disagree`. | **Higher**: more tolerance for small permanent offsets between the two metering points, fewer `disagree` states. **Lower** (or 0): the source flips to `disagree` for the slightest difference — the loop still uses the more conservative value, and `grid_fallback` on `binary_sensor.ems_degraded` shows it. |
 | `input_number.ems_failsafe_pct` | 0…100 (1) | 0 % | Written in `GRID_BLIND` (no usable grid or solar reading) and by the watchdog when the loop stopped writing. | `0`: inverters stopped, export impossible. Raise to 2 % only if your inverters oscillate at 0 %. Higher: the fail-safe itself can export. |
 
 ### Reaction speed and writes

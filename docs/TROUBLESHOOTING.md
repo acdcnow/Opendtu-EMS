@@ -335,8 +335,16 @@ capacity.
 All notifications use `persistent_notification` with a fixed `notification_id`, so they
 update in place instead of piling up. They disappear when you dismiss them.
 
+A `persistent_notification` is shown to **every** Home Assistant user — Home Assistant has no
+per-user targeting for it. Two things keep the list calm: the integration itself only speaks when
+something actually happened (a file was written, a newer one is bundled, a file could not be
+handled, or `packages:` is missing — a routine restart notifies nobody), and the alerts below only
+appear in a real fault.
+
 | `notification_id` | Meaning |
 |---|---|
+| `opendtu_ems_bundle` | the integration wrote a file (a restart is needed) or could not handle one |
+| `opendtu_ems_packages` | `packages:` is missing in `configuration.yaml` |
 | `opendtu_ems_failsafe` | the loop stopped writing — fail-safe limit applied |
 | `opendtu_ems_dtu` | no inverter is reachable at all (OpenDTU off / MQTT down) |
 | `opendtu_ems_capacity` | fewer than 3 inverters reachable, the rest already at 100 %, grid still imports |

@@ -1,6 +1,6 @@
 # =============================================================================
 #  OpenDTU  ·  Battery-first / zero-export EMS      (Home Assistant 2026.9)
-#  version 1.7.0  ·  2026-09-28  ·  see CHANGELOG.md
+#  version 1.8.0  ·  2026-10-09  ·  see CHANGELOG.md
 # -----------------------------------------------------------------------------
 #  Drop-in replacement for the automation
 #  "OpenDTU: Battery-First Aggressive EMS (Math-Based)".
@@ -574,21 +574,30 @@ template:
           {%- endif -%}
 
   - binary_sensor:
-      # on when running degraded: any mode that is not FULL / OFF / STARTING /
-      # NIGHT, or - while the loop is really regulating (FULL) - a grid reading
-      # that comes from the backup meter or two meters that disagree.
-      # STARTING, NIGHT and OFF are normal states, not a problem, and the meter
-      # source is only judged while a limit is actually computed: both meters
-      # going stale at night no longer raises a false alarm.
+      # on ONLY for the fail-safe modes - a problem, not a "not ideal" state:
+      # DTU_BLIND (no inverter reachable), GRID_BLIND (no usable grid or solar
+      # reading) and NO_BATTERY (battery data gone). FULL, STARTING, NIGHT and
+      # OFF are normal or deliberate and stay silent.
+      # WHICH grid meter the loop uses is NOT a fault: it works with either
+      # meter and takes the more conservative value when the two disagree. That
+      # is reported in the attributes below and in the "source" attribute of
+      # sensor.ems_grid_power. Before 1.8.0 a fallback to the backup meter, or a
+      # permanent offset between the two metering points, kept this sensor on
+      # the whole day although the system regulated normally.
       - name: "EMS degraded"
         unique_id: ems_degraded
         device_class: problem
         icon: mdi:alert-outline
+        attributes:
+          mode: "{{ states('sensor.ems_mode') }}"
+          grid_source: "{{ state_attr('sensor.ems_grid_power', 'source') }}"
+          # true while the loop regulates on the backup meter or on two meters
+          # that disagree - worth a look, but not a problem
+          grid_fallback: >-
+            {{- states('sensor.ems_mode') == 'FULL'
+                and state_attr('sensor.ems_grid_power', 'source') in ['victron', 'disagree'] -}}
         state: >-
-          {%- set mode = states('sensor.ems_mode') -%}
-          {{- mode not in ['FULL', 'OFF', 'NIGHT', 'STARTING']
-              or (mode == 'FULL'
-                  and state_attr('sensor.ems_grid_power', 'source') != 'shelly') -}}
+          {{- states('sensor.ems_mode') not in ['FULL', 'OFF', 'NIGHT', 'STARTING'] -}}
 
 
 # =============================================================================

@@ -210,7 +210,12 @@ def _check_only(config_dir: Path, bundle_dir: Path) -> EmsBundleData:
 
 @callback
 def _notify(hass: HomeAssistant, data: EmsBundleData) -> None:
-    """Tell the user what happened - the entities only exist after a restart."""
+    """Tell the user what happened - but only when there is something to tell.
+
+    A restart that finds every file in place stays silent: the state is always
+    visible in `sensor.ems_bundle`, and a "nothing to do" notice on every start
+    only trains people to ignore the notification area.
+    """
     lines: list[str] = []
 
     if data.failures:
@@ -245,12 +250,9 @@ def _notify(hass: HomeAssistant, data: EmsBundleData) -> None:
             "file is kept as `.bak`), then **restart Home Assistant**. Compare the two files "
             "first if you edited section 1."
         )
-    elif not data.failures:
-        package = data.result_for("opendtu_ems.yaml")
-        lines.append(
-            f"Nothing to do - the installed package is current "
-            f"({package.installed_version if package else '-'}) and was not touched."
-        )
+    # A restart that finds everything in place is the normal case and is NOT
+    # reported (see the docstring). A leftover result notification is dismissed
+    # below instead of being replaced by a "nothing to do" message.
 
     if data.packages_configured is False:
         lines.append("")
@@ -267,6 +269,9 @@ def _notify(hass: HomeAssistant, data: EmsBundleData) -> None:
         persistent_notification.async_create(
             hass, "\n".join(lines), title=NAME, notification_id=NOTIFICATION_RESULT
         )
+    else:
+        # nothing to report - also clear a notice an earlier run may have left
+        persistent_notification.async_dismiss(hass, NOTIFICATION_RESULT)
 
     if data.packages_configured is False:
         persistent_notification.async_create(

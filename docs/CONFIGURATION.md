@@ -23,9 +23,11 @@ Everything the package creates, what it means and how to tune it.
 | `OFF` | `input_boolean.ems_enabled` is off | nothing is written |
 
 Mode is published as `sensor.ems_mode`; `binary_sensor.ems_degraded` is on for every mode except
-`FULL`, `OFF`, `NIGHT` and `STARTING`, and, **while the mode is `FULL`**, also when the grid value
-comes from the backup meter or when the two meters disagree. The meter source is deliberately not
-judged in a standby state, so both meters going stale at night does not raise an alarm.
+`FULL`, `OFF`, `NIGHT` and `STARTING` — i.e. only for the fail-safe modes `DTU_BLIND`,
+`GRID_BLIND` and `NO_BATTERY`. Which grid meter is in use is **not** a problem state: the loop
+works with either meter and takes the more conservative value when the two disagree. The meter in
+use is exposed in the attributes `mode`, `grid_source` and `grid_fallback` of the sensor (and in
+the `source` attribute of `sensor.ems_grid_power`).
 
 > The EMS entities (helpers, sensors, script, automations) are plain Home Assistant entities.
 > They exist regardless of OpenDTU — a DTU that is switched off only makes the
@@ -93,7 +95,7 @@ start, not something Home Assistant sets by itself. See
 | `sensor.ems_pv_delivery` | produced / commanded output in % | `expected_w`, `actual_w` |
 | `sensor.ems_house_load` | house consumption in W (`solar + grid - battery`) | – |
 | `sensor.ems_limit_target` | percentage to write | `mode`, `grid`, `solar`, `active`, `capacity`, `allowance` (W offered to the battery), `charge_push` (W asked from the array for charging) |
-| `binary_sensor.ems_degraded` | `on` when degraded | – |
+| `binary_sensor.ems_degraded` | `on` in a fail-safe mode (a problem) | `mode`, `grid_source`, `grid_fallback` (meter in use — informational, not a fault) |
 
 ---
 
@@ -102,8 +104,9 @@ start, not something Home Assistant sets by itself. See
 Both meters are read every cycle.
 
 * Both alive and within `EMS meter tolerance` → the **primary** (Shelly) is used.
-* Primary dead/frozen (> 300 s without an update) → the **backup** (Victron) is used, the
-  mode stays `FULL` and `binary_sensor.ems_degraded` turns on.
+* Primary dead/frozen (> 300 s without an update) → the **backup** (Victron) is used and the
+  mode stays `FULL`; `grid_fallback` on `binary_sensor.ems_degraded` shows it, but the sensor does
+  not report a problem for it.
 * Both alive but differing by more than the tolerance → the **smaller** value (the one
   showing more export) is used and the source becomes `disagree`. Erring towards less PV can
   never cause an export.

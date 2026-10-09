@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-10-09
+
+### Fixed
+
+- **The integration no longer raises a "nothing to do" notification on every
+  restart.** The message *"Nothing to do - the installed package is current
+  (x.y.z) and was not touched."* appeared on every Home Assistant start and was
+  visible to **every** Home Assistant user (a `persistent_notification` cannot
+  be addressed to one user). `_notify` now speaks only when something actually
+  happened: a file was written (restart needed), a newer file is bundled, a file
+  could not be handled, or `packages:` is missing. A routine start that finds
+  every file in place is silent - the state is always visible in
+  `sensor.ems_bundle`. A result notification left over from an earlier run is
+  dismissed again.
+
+### Changed
+
+- **`binary_sensor.ems_degraded` is on only for the fail-safe modes now**
+  (`DTU_BLIND`, `GRID_BLIND`, `NO_BATTERY`). Which grid meter the loop uses -
+  `shelly`, `victron` (backup), `disagree` or `none` - is no longer a problem
+  state: the loop works with either meter and takes the more conservative value
+  when the two disagree. A fallback to the backup meter, or a permanent offset
+  between the two metering points, used to keep the sensor on the whole day
+  although the system regulated normally. The meter in use is now reported in
+  the new attributes `mode`, `grid_source` and `grid_fallback` of the sensor
+  (and in the `source` attribute of `sensor.ems_grid_power`, as before).
+
+### Documentation
+
+- `binary_sensor.ems_degraded` is described as a fail-safe indicator in
+  `README.md`, `docs/CONFIGURATION.md` and `docs/TROUBLESHOOTING.md`, and the
+  notifications section explains when the integration speaks (and when not).
+
 ## [1.7.0] - 2026-09-28
 
 ### Added
