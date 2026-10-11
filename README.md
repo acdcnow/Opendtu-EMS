@@ -14,7 +14,8 @@ every watt it can take but it never exports, not even when a sensor or a micro-i
 dies.
 
 * one YAML file: helpers, template sensors, two scripts and three automations
-* a ready-made dashboard (`dashboards/ems-overview.yaml`) see [docs/DASHBOARD.md](docs/DASHBOARD.md)
+• two ready-made dashboards — `dashboards/ems-overview.yaml` (everyday) and `dashboards/ems-expert.yaml`
+  (diagnostics + tuning, gated on `input_boolean.ems_expert_mode`) — see [docs/DASHBOARD.md](docs/DASHBOARD.md)
 * documented in depth in the [wiki](https://github.com/acdcnow/opendtu-ems/wiki): architecture
   concept, software design, workflow diagrams and the archived control law of ≤ 1.4.0
 * no custom component needs to be written by you and the EMS stays one YAML file HACS
@@ -91,12 +92,20 @@ measurement, not by an export that may be transient:
 1. **Charge acceptance learning.** If the grid exports more than `EMS export tolerance`
    (150 W) for longer than `EMS export grace` (60 s) while the battery takes measurably less
    than it is offered, the offer (`EMS charge allowance`) is cut to what the battery is
-   really taking at most by half per step, so one bad reading cannot stop the charge. The
-   estimate is reset to `EMS max charge power` whenever the battery discharges (a new charge
+   really taking at most by half per step, so one bad reading cannot stop the charge.
+   **The cut additionally requires that the charge power has stopped rising.** While the ESS is
+   still climbing towards its limit (a charge current ramp takes seconds to minutes) the export
+   is not proof of anything and the grace simply restarts. Without that guard the ramp was read
+   as a refusal, the offer was latched below the battery's real acceptance and the array stayed
+   cut while the battery was nowhere near its charge limit — the *"solar is set down even if the
+   battery is not charging to the limit"* failure, fixed in 1.9.0. The estimate is reset to the
+   charge power limit whenever the battery discharges (a new charge
    cycle), and probed upwards again (×1.5) after `EMS charge re-probe` (15 min) without an
    export. So a battery that frees up is charged at full power again by itself.
 2. **Signed battery power.** Discharging must *increase* the target, so the raw signed
-   value is used, not a value clamped at zero.
+   value is used, not a value clamped at zero. The charge power is derived from the Victron DC
+   bus (`voltage x signed current`) when it is readable, so a discharge (negative current) is
+   recognised as such and never curtails the array.
 3. **The SoC never throttles the array.** The only SoC effect is the stop above, and it is
    corroborated by the battery power. A stuck or badly calibrated SoC can waste nothing.
 
@@ -141,15 +150,17 @@ Additionally:
 | `sensor.ems_inverter_capacity` | reachable inverter capacity in W, attributes `active`, `current_pct` |
 | `sensor.ems_pv_delivery` | produced vs. commanded output in %, attributes `expected_w`, `actual_w` |
 | `sensor.ems_house_load` | house consumption in W, derived from `solar + grid - battery` |
+| `sensor.ems_battery_charge_power` | battery power in W, derived from the Victron DC bus (`DC bus voltage x SIGNED battery current`, positive = charging) and falling back to the Seplos power. Attributes `source`, `voltage`, `current` |
+| `sensor.ems_charge_power_limit` | the dynamic charge power limit in W: `DC bus voltage x EMS max charge current`, capped at `EMS max charge power`. Attributes `dynamic`, `voltage`, `current_limit` |
 | `sensor.ems_limit_target` | the percentage to write, attributes `mode`, `grid`, `solar`, `active`, `capacity`, `allowance` (W the battery may take), `charge_push` (W asked from the array) |
 | `binary_sensor.ems_degraded` | on only for the fail-safe modes (`DTU_BLIND`, `GRID_BLIND`, `NO_BATTERY`). Attributes `mode`, `grid_source` and `grid_fallback` show which meter is in use — a fallback to the backup meter or a disagreement between the two meters is **not** a problem |
 | `script.ems_apply` | writes one percentage to all governed inverters in parallel |
-| `script.ems_set_defaults` | restores the documented defaults of all 16 tuning helpers and switches automatic mode back on |
+| `script.ems_set_defaults` | restores the documented defaults of all 18 tuning helpers and switches automatic mode back on |
 | `automation.opendtu_ems_loop` | the control loop |
 | `automation.opendtu_ems_watchdog` | fail-safe + capacity/delivery monitoring |
 | `automation.opendtu_ems_boot` | records the start time, so the loop stays `STARTING` after a restart |
 
-Plus 22 helpers (4 switches, 16 numbers, 2 date/times) see
+Plus 26 helpers (5 switches, 18 numbers, 2 date/times, 1 more dashboard switch) see
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Requirements
@@ -168,7 +179,7 @@ Plus 22 helpers (4 switches, 16 numbers, 2 date/times) see
 
 **Option A - HACS (recommended):** add this repository to HACS as an **Integration**, install
 it, then add *OpenDTU Zero-Export EMS* under Settings → Devices & services. It writes
-`packages/opendtu_ems.yaml` and the dashboard view into your config folder. Restart when asked.
+`packages/opendtu_ems.yaml` and the two dashboard views into your config folder. Restart when asked.
 See [Install with HACS](#install-with-hacs).
 
 **Option B - manual copy:**
@@ -237,7 +248,7 @@ The action replaces the installed package: compare it with your own version firs
 section 1; the previous file stays as `.bak`.
 
 Installing *without* HACS is supported and identical in effect copy `packages/opendtu_ems.yaml`
-and, if you want, `dashboards/ems-overview.yaml` by hand.
+and, if you want, `dashboards/ems-overview.yaml` and `dashboards/ems-expert.yaml` by hand.
 
 ### HACS for the dashboard cards
 
@@ -260,7 +271,7 @@ Search the name in HACS, Download, then paste the view see
 
 ## Settings: what every value does
 
-The loop is tuned by 21 helpers (Settings → Devices & services → **Helpers**, search *EMS*).
+The loop is tuned by 23 helpers (Settings → Devices & services → **Helpers**, search *EMS*).
 This is the whole configuration surface: apart from the entity ids in section 1 of the package
 nothing else has to be edited by hand.
 
@@ -272,11 +283,19 @@ at a time and watch `sensor.ems_limit_target` (attributes `allowance` and `charg
 ### How the number is calculated
 
 ```
-allowance  = min(EMS max charge power, EMS charge allowance)
-house load = solar + grid - battery power           (measured, no load sensor needed)
-target W   = house load + max(allowance, battery power) - EMS grid bias
-limit %    = target W / reachable inverter capacity x 100
+charge power = battery voltage x SIGNED battery current   (Victron DC bus, >0 = charging)
+charge limit = min(battery voltage x EMS max charge current, EMS max charge power)
+allowance    = min(charge limit, EMS charge allowance)
+house load   = solar + grid - charge power                (measured, no load sensor needed)
+target W     = house load + max(allowance, charge power) - EMS grid bias
+limit %      = target W / reachable inverter capacity x 100
 ```
+
+The charge power is taken from the **Victron DC bus** (`DC bus voltage x battery current`)
+whenever those two sensors are readable, and from the Seplos BMS power otherwise. A **negative**
+current means the battery is discharging - that is not a charge limit and never curtails the
+array. The charge *limit* follows the pack voltage the same way, so it stays `min(DVCC amps,
+BMS CCL) x voltage` instead of a fixed watt value.
 
 Three consequences worth internalising:
 
@@ -295,6 +314,7 @@ Three consequences worth internalising:
 | `input_boolean.ems_automatic` | on | Automatic mode. | **off**: manual override — `EMS manual limit` is written to all inverters, every sensor is ignored, the charge-allowance learning is frozen and the watchdog stands down. The manual value is ignored while this switch is on. |
 | `input_boolean.ems_simulate_battery_loss` | off | Test switch for the fail-safe path: while it is on, the mode is forced to `NO_BATTERY`. | **on**: the array drops to `house load - bias`. Use it to prove that the loop degrades instead of exporting. |
 | `input_boolean.ems_verbose` | off | Writes one debug line per run (mode, grid with its source, solar, SoC, battery, inverters, capacity, written limit). | **on**: add the `logger` entry from [docs/INSTALL.md](docs/INSTALL.md#6-verify-the-first-runs) to see it. Turn it off again afterwards, it is one line per 15 s. |
+| `input_boolean.ems_expert_mode` | off | Dashboard switch only - the control loop never reads it. | **on**: the *EMS Expert* view (`dashboards/ems-expert.yaml`) reveals the card with every adjustable parameter. The helpers are always reachable under Settings → Devices & services → Helpers, switch or not. |
 
 #### Manual override in detail
 
@@ -320,8 +340,10 @@ next run re-reads every sensor and resumes regulation within one cycle.
 
 | Helper | Range (step) | Default | What it does | If you change it |
 |---|---|---|---|---|
-| `input_number.ems_max_charge_power` | 0…6000 (100) | 2500 W | The most charge power the array may be asked for: `min(DVCC max charge current, BMS CCL) x battery voltage`. Together with the house load this decides how much PV is used at all. | **Higher**: the array may produce more, so less sun is thrown away, but only the battery and the BMS decide whether it is really taken, and the allowance learning cuts it back if not. **Lower**: more curtailment. **0**: the loop never asks for charge power (zero export only, the battery is never charged from the array). |
-| `input_number.ems_charge_allowance` | 0…6000 (50) | 2500 W | **Written by the loop.** The charge power the battery has been *observed* to accept. The effective offer is `min(EMS max charge power, this)`; the loop cuts it when a lasting export proves the battery cannot use the offer, resets it whenever the battery discharges, and probes it upwards when the grid has been quiet. | You can set it by hand to cap charging without touching the maximum, but it is the *second* cap: the smaller of the two always wins. If it sits permanently below the maximum, the battery or the BMS is the bottleneck (CV phase, cold pack, CCL), not the EMS. |
+| `input_number.ems_max_charge_power` | 0…6000 (100) | 2500 W | The **ceiling** for the charge power, and the fallback when the battery voltage sensor is missing. The loop really offers `battery voltage x EMS max charge current`, capped at this value. Together with the house load this decides how much PV is used at all. | **Higher**: the array may produce more, so less sun is thrown away, but only the battery and the BMS decide whether it is really taken, and the allowance learning cuts it back if not. **Lower**: more curtailment. **0**: the loop never asks for charge power (zero export only, the battery is never charged from the array). |
+| `input_number.ems_max_charge_current` | 0…200 (1) | 50 A | The **charge current limit**: `min(DVCC max charge current, BMS CCL)`. The dynamic charge power limit is `battery voltage x this`. | **Higher**: a higher charge limit, up to `EMS max charge power`. **Lower**: fewer watts go to the battery, the array is curtailed earlier. **0**: fall back to the static `EMS max charge power`. |
+| `input_number.ems_charge_allowance` | 0…6000 (50) | 2500 W | **Written by the loop.** The charge power the battery has been *observed* to accept. The effective offer is `min(charge limit, this)`; the loop cuts it when a lasting export proves the battery cannot use the offer - **but only once the charge power has stopped climbing** (`EMS battery power baseline`), so an ESS ramp can no longer be mistaken for a refusal. It is reset whenever the battery discharges and probed upwards when the grid has been quiet. | You can set it by hand to cap charging without touching the maximum, but it is the *second* cap: the smaller of the two always wins. If it sits permanently below the maximum, the battery or the BMS is the bottleneck (CV phase, cold pack, CCL), not the EMS. |
+| `input_number.ems_bat_prev` | -6000…6000 (1) | 0 W | Internal. The **baseline of the current export episode**: while the battery keeps taking measurably more (> 50 W) it follows the battery up and the export grace restarts. That is what stops a still-ramping ESS from being read as "the battery refuses the offer". | Do not edit: a manual change only re-arms or silences the cut for one episode. |
 | `input_number.ems_soc_stop` | 80…100 (1) | 100 % | At or above this SoC the charge push is dropped and the array covers the house load only. It counts **only while the battery is measurably not charging** (`battery power < EMS export tolerance`), so a stuck or badly calibrated SoC can never cut the array. | **Lower** (e.g. 95): stop *asking* for charge earlier, but only once the battery has actually stopped taking current, so the array keeps running while it charges. `100`: never stop, the BMS and the ESS decide. |
 | `input_number.ems_export_tolerance` | 0…1000 (10) | 150 W | An export up to this many watts is ignored: meter noise, the Victron ramp and the upward probe all live in this band. | **Higher**: more patience, fewer allowance cuts, but the grid may export that much for a while. **Never 0**: at 0 every watt of export counts as proof and the allowance is cut on the first tick. |
 | `input_number.ems_export_grace` | 0…600 (15) | 60 s | How long an export may last (counted in 15 s loop runs) before it counts as proof that the battery cannot use the offer. | **Higher** (120…180 s) if your ESS or BMS reacts slowly. **Lower**: reacts faster, but cuts on a short ramp that would have passed. |

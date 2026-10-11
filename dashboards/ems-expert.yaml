@@ -1,0 +1,315 @@
+# =============================================================================
+#  OpenDTU EMS  -  Lovelace view 2 of 2:  "EMS Expert"
+# -----------------------------------------------------------------------------
+#  The board for tuning and for finding out WHY the loop did something.
+#      1) status + the expert-mode switch
+#      2) the control law, live (target, offer, push, bias)
+#      3) battery and charge power: V x I, dynamic limit, learned offer
+#      4) the ramp guard internals (baseline, export ticks)
+#      5) charts: charge power vs limit vs offer, and limit vs grid
+#      6) per-inverter / capacity detail
+#      7) EXPERT MODE ONLY: every adjustable parameter
+#      8) EXPERT MODE ONLY: maintenance and fail-safe test actions
+#
+#  The last two blocks are wrapped in a conditional card gated on
+#  input_boolean.ems_expert_mode, so this board is safe to leave open: without
+#  the switch it is a read-only diagnostics page. Flip "Expert mode" at the top
+#  to reveal the controls. (The tuning helpers are always reachable under
+#  Settings -> Devices & services -> Helpers, switch or not.)
+#
+#  REQUIRED HACS FRONTEND CARDS
+#    - Mushroom  (chips and number cards)   piitaya/lovelace-mushroom
+#    - ApexCharts Card                      RomRider/apexcharts-card
+#    - Mini Graph Card                      kalkih/mini-graph-card
+#  Everything else is built into Home Assistant.
+# =============================================================================
+
+title: EMS Expert
+path: ems-expert
+icon: mdi:wrench-cog-outline
+
+cards:
+  # ---------------------------------------------------------------------------
+  # 1) status, and the switch that reveals the tuning cards below
+  # ---------------------------------------------------------------------------
+  - type: entities
+    title: Status
+    show_header_toggle: false
+    entities:
+      - entity: input_boolean.ems_expert_mode
+        name: Expert mode (reveal the tuning cards)
+      - entity: input_boolean.ems_enabled
+        name: EMS active (master switch)
+      - entity: input_boolean.ems_automatic
+        name: Automatic mode
+      - entity: sensor.ems_mode
+      - entity: binary_sensor.ems_degraded
+        name: Degraded (a fail-safe mode is active)
+      - entity: input_datetime.ems_last_apply
+        name: Last limit written
+      - entity: input_datetime.ems_started_at
+        name: Home Assistant started
+
+  # ---------------------------------------------------------------------------
+  # 2) the control law as it is running right now
+  # ---------------------------------------------------------------------------
+  - type: markdown
+    title: Control law, live
+    content: >-
+      **house load** {{ states('sensor.ems_house_load') }} W =
+      solar + grid − battery ·
+      **grid** {{ states('sensor.ems_grid_power') }} W
+      [{{ state_attr('sensor.ems_grid_power', 'source') }}] ·
+      **solar** {{ states('sensor.solarleistung_gesamt') }} W
+
+
+      **target** = house load + offer − bias
+      ({{ states('input_number.ems_grid_bias') }} W) =
+      {{ states('sensor.ems_limit_target') }} % of
+      {{ states('sensor.ems_inverter_capacity') }} W ·
+      **offer** {{ state_attr('sensor.ems_limit_target', 'allowance') }} W ·
+      **push** {{ state_attr('sensor.ems_limit_target', 'charge_push') }} W
+
+
+      *The offer is min(`EMS max charge power`, the learned
+      `EMS charge allowance`) in W. `push` is what is left to ask for after what
+      the battery already takes. The array is never reduced while `push` is
+      above 0 and the battery is still climbing — that is the 1.9.0 fix.*
+
+  - type: history-graph
+    title: Limit, grid and battery charge (12 h)
+    hours_to_show: 12
+    entities:
+      - entity: sensor.ems_limit_target
+      - entity: sensor.ems_grid_power
+      - entity: sensor.ems_battery_charge_power
+
+  # ---------------------------------------------------------------------------
+  # 3) battery and charge power - the figures the law works with
+  # ---------------------------------------------------------------------------
+  - type: entities
+    title: Battery and charge power
+    show_header_toggle: false
+    entities:
+      - entity: sensor.ems_battery_charge_power
+        name: Battery power (V x I, + = charging)
+      - entity: sensor.ems_charge_power_limit
+        name: Dynamic charge power limit (V x A)
+      - entity: input_number.ems_charge_allowance
+        name: Learned offer (may only go below the limit)
+      - entity: sensor.serialbattery_seplos_leistung
+        name: Battery power (Seplos BMS, comparison)
+      - entity: sensor.serialbattery_seplos_dc_bus_spannung
+        name: DC bus voltage
+      - entity: sensor.venus_dc_batterie_stromstarke
+        name: Battery current (+ = charging)
+      - entity: sensor.serialbattery_seplos_ladestand
+        name: State of charge
+
+  - type: custom:apexcharts-card
+    header:
+      show: true
+      title: Charge power vs limit vs learned offer
+      show_states: true
+    graph_span: 12h
+    all_series_config:
+      type: line
+      stroke_width: 2
+      group_by:
+        func: avg
+        duration: 1min
+    series:
+      - entity: sensor.ems_battery_charge_power
+        name: Battery charge
+        color: "#8e44ad"
+      - entity: sensor.ems_charge_power_limit
+        name: Charge limit
+        color: "#43a047"
+      - entity: input_number.ems_charge_allowance
+        name: Learned offer
+        color: "#f7c948"
+
+  # ---------------------------------------------------------------------------
+  # 4) the ramp guard - why the learned offer did or did not change
+  # ---------------------------------------------------------------------------
+  - type: entities
+    title: Charge acceptance learning
+    show_header_toggle: false
+    entities:
+      - entity: input_number.ems_bat_prev
+        name: Baseline (follows the battery while it still climbs)
+      - entity: input_number.ems_export_ticks
+        name: Consecutive exporting runs
+      - entity: input_number.ems_export_tolerance
+        name: Export tolerance
+      - entity: input_number.ems_export_grace
+        name: Export grace
+      - entity: input_number.ems_reprobe_seconds
+        name: Upward re-probe after
+
+  # ---------------------------------------------------------------------------
+  # 5) inverters: capacity, redistribution and delivery
+  # ---------------------------------------------------------------------------
+  - type: entities
+    title: Inverters
+    show_header_toggle: false
+    entities:
+      - entity: sensor.ems_inverter_capacity
+      - entity: sensor.ems_pv_delivery
+      - entity: sensor.ems_grid_power
+      - entity: sensor.ems_house_load
+
+  - type: custom:mini-graph-card
+    name: PV delivery vs commanded
+    icon: mdi:chart-bell-curve-cumulative
+    entities:
+      - entity: sensor.ems_pv_delivery
+        name: Delivery
+    min: 0
+    max: 100
+    hours_to_show: 24
+    points_per_hour: 12
+    line_width: 2
+    show:
+      labels: true
+      fill: true
+
+  # ===========================================================================
+  # 6) EXPERT MODE ONLY - every adjustable parameter
+  #    Hidden until input_boolean.ems_expert_mode is on.
+  # ===========================================================================
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: input_boolean.ems_expert_mode
+        state: "on"
+    card:
+      type: grid
+      columns: 2
+      square: false
+      cards:
+        - type: custom:mushroom-title-card
+          title: Charge power
+          subtitle: how much of the array may run
+        - type: custom:mushroom-number-card
+          entity: input_number.ems_max_charge_power
+          name: Max charge power (ceiling)
+          icon: mdi:battery-charging-high
+          display_mode: slider
+        - type: custom:mushroom-number-card
+          entity: input_number.ems_max_charge_current
+          name: Max charge current (V x A)
+          icon: mdi:current-dc
+          display_mode: slider
+        - type: custom:mushroom-number-card
+          entity: input_number.ems_charge_allowance
+          name: Learned charge allowance
+          icon: mdi:battery-sync-outline
+          display_mode: slider
+        - type: custom:mushroom-number-card
+          entity: input_number.ems_soc_stop
+          name: SoC stop charging
+          icon: mdi:battery-check-outline
+          display_mode: slider
+        - type: custom:mushroom-title-card
+          title: Grid and fail-safe
+        - type: custom:mushroom-number-card
+          entity: input_number.ems_grid_bias
+          name: Grid bias (target import)
+          icon: mdi:transmission-tower
+          display_mode: slider
+        - type: custom:mushroom-number-card
+          entity: input_number.ems_meter_tolerance
+          name: Meter tolerance
+          icon: mdi:scale-balance
+          display_mode: slider
+        - type: custom:mushroom-number-card
+          entity: input_number.ems_failsafe_pct
+          name: Fail-safe limit
+          icon: mdi:shield-alert-outline
+          display_mode: slider
+        - type: custom:mushroom-number-card
+          entity: input_number.ems_manual_pct
+          name: Manual limit (automatic off)
+          icon: mdi:hand-back-right-outline
+          display_mode: slider
+        - type: custom:mushroom-title-card
+          title: Charge acceptance learning
+        - type: custom:mushroom-number-card
+          entity: input_number.ems_export_tolerance
+          name: Export tolerance
+          icon: mdi:transmission-tower-off
+          display_mode: slider
+        - type: custom:mushroom-number-card
+          entity: input_number.ems_export_grace
+          name: Export grace
+          icon: mdi:timer-alert-outline
+          display_mode: slider
+        - type: custom:mushroom-number-card
+          entity: input_number.ems_reprobe_seconds
+          name: Upward re-probe
+          icon: mdi:arrow-up-bold-outline
+          display_mode: slider
+        - type: custom:mushroom-title-card
+          title: Reaction speed
+        - type: custom:mushroom-number-card
+          entity: input_number.ems_settle_seconds
+          name: Settle time (must stay < 15 s)
+          icon: mdi:timer-sand
+          display_mode: slider
+        - type: custom:mushroom-number-card
+          entity: input_number.ems_max_step_pct
+          name: Max step per write
+          icon: mdi:stairs-up
+          display_mode: slider
+        - type: custom:mushroom-number-card
+          entity: input_number.ems_hysteresis_pct
+          name: Hysteresis
+          icon: mdi:water-percent
+          display_mode: slider
+        - type: custom:mushroom-number-card
+          entity: input_number.ems_start_grace
+          name: Start grace after a restart
+          icon: mdi:timer-play-outline
+          display_mode: slider
+
+  # ===========================================================================
+  # 7) EXPERT MODE ONLY - maintenance, tests and the way back
+  # ===========================================================================
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: input_boolean.ems_expert_mode
+        state: "on"
+    card:
+      type: entities
+      title: Maintenance and fail-safe tests
+      show_header_toggle: false
+      entities:
+        - entity: input_boolean.ems_verbose
+          name: Verbose logging (one line per run)
+        - entity: input_boolean.ems_simulate_battery_loss
+          name: Test - simulate battery loss (NO_BATTERY)
+        - entity: sensor.ems_bundle
+          name: Installed package / dashboard bundle
+        - entity: automation.opendtu_ems_loop
+        - entity: automation.opendtu_ems_watchdog
+        - entity: automation.opendtu_ems_boot
+        - type: button
+          name: Restore the documented defaults
+          icon: mdi:backup-restore
+          action_name: Run
+          tap_action:
+            action: perform-action
+            perform_action: script.ems_set_defaults
+            confirmation:
+              text: >-
+                Reset every EMS tuning helper to the documented defaults and
+                switch automatic mode back on?
+        - type: button
+          name: Re-apply the limit now
+          icon: mdi:play
+          action_name: Run
+          tap_action:
+            action: perform-action
+            perform_action: script.ems_apply

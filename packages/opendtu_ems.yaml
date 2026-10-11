@@ -1,6 +1,6 @@
 # =============================================================================
 #  OpenDTU  ·  Battery-first / zero-export EMS      (Home Assistant 2026.9)
-#  version 1.8.0  ·  2026-10-09  ·  see CHANGELOG.md
+#  version 1.9.0  ·  2026-10-11  ·  see CHANGELOG.md
 # -----------------------------------------------------------------------------
 #  Drop-in replacement for the automation
 #  "OpenDTU: Battery-First Aggressive EMS (Math-Based)".
@@ -79,6 +79,15 @@
 #  Battery (Seplos BMS): SoC + SIGNED power (positive = charging !)
 #     sensor.serialbattery_seplos_ladestand
 #     sensor.serialbattery_seplos_leistung
+#  Battery DC side (Victron) - the DYNAMIC charge power:
+#     sensor.serialbattery_seplos_dc_bus_spannung   (battery voltage, V)
+#     sensor.venus_dc_batterie_stromstarke          (SIGNED battery current, A,
+#                                                    positive = charging)
+#  The control law uses  charge power = voltage x current  whenever both are
+#  readable and falls back to sensor.serialbattery_seplos_leistung otherwise.
+#  A NEGATIVE current means the battery is DISCHARGING: that is not a charge
+#  limit and must never curtail the array. The maximum charge power is
+#  voltage x "EMS max charge current", so it follows the pack voltage.
 #  Inverter limits - RELATIVE (percent) on purpose:
 #     number.hm1500_limit_nonpersistent_relative   (1500 W)
 #     number.hms1600_a_limit_nonpersistent_relative (1600 W)
@@ -118,6 +127,13 @@ input_boolean:
   ems_verbose:
     name: EMS verbose logging
     icon: mdi:script-text-play-outline
+  # Dashboard switch, not read by the control loop: OFF (default) keeps the
+  # ready-made dashboards free of tuning controls; ON reveals the expert card
+  # with every adjustable parameter. The tuning helpers are always reachable
+  # under Settings > Devices & services > Helpers regardless of this switch.
+  ems_expert_mode:
+    name: EMS expert mode
+    icon: mdi:wrench-cog-outline
 
 input_number:
   # The limit written to all inverters while "EMS automatic mode" is OFF.
@@ -151,7 +167,9 @@ input_number:
     unit_of_measurement: "%"
     icon: mdi:water-percent
   # max charge power of the battery in W (50 A x ~50 V).
-  # BETTER: derive it:  min(50, CCL) * battery voltage
+  # This is the HARD CEILING and the fallback. The charge power the loop really
+  # offers is  battery voltage x "EMS max charge current"  (see below), capped
+  # at this value, so the limit follows the pack voltage.
   ems_max_charge_power:
     name: EMS max charge power
     min: 0
@@ -160,6 +178,18 @@ input_number:
     mode: box
     unit_of_measurement: W
     icon: mdi:battery-charging-high
+  # The charge current limit in amps: min(DVCC max charge current, BMS CCL).
+  # The dynamic charge power limit is  battery voltage x this value. With the
+  # reference installation (50 A, ~51 V) that is about 2550 W. If the battery
+  # voltage sensor is missing, the static "EMS max charge power" is used.
+  ems_max_charge_current:
+    name: EMS max charge current
+    min: 0
+    max: 200
+    step: 1
+    mode: box
+    unit_of_measurement: A
+    icon: mdi:current-dc
   # Hard stop for the charge offer: at or above this SoC the EMS stops asking
   # the array for charge power and only covers the house load. 100 = never.
   # It counts only while the battery is really NOT charging, so a wrong or
@@ -187,6 +217,22 @@ input_number:
     mode: box
     unit_of_measurement: W
     icon: mdi:battery-sync-outline
+  # Internal, written by the loop: the BASELINE of the current export episode.
+  # While the battery keeps taking measurably more (> 50 W) it follows the
+  # battery up and the export grace restarts, so a still-ramping ESS can never
+  # be read as "the battery cannot take the offer" - otherwise the offer is cut
+  # before the battery ever reached its charge limit (the reported "solar is set
+  # down although the battery is not charging to the limit" failure). Only a
+  # charge power that has plateaued below the offer for the whole grace counts.
+  # Do not edit (a manual change only re-arms or silences the cut).
+  ems_bat_prev:
+    name: EMS battery power baseline
+    min: -6000
+    max: 6000
+    step: 1
+    mode: box
+    unit_of_measurement: W
+    icon: mdi:history
   # An export up to this many watts is tolerated: meter noise, the Victron ramp
   # and the upward probe all live in this band. Nothing is curtailed and no
   # allowance is cut inside it.
@@ -479,6 +525,70 @@ template:
           {%- set bat = states('sensor.serialbattery_seplos_leistung') | float(0) -%}
           {{ (solar + grid - bat) | round(0) | int(0) }}
 
+      # --- battery charge power (dynamic) -----------------------------------
+      # The Seplos BMS publishes a power value; the Victron publishes the DC bus
+      # voltage and the SIGNED battery current. Their product is the momentary
+      # battery power and it is the value the control law works with:
+      #   * positive = charging   -> this is the power the array has to serve
+      #   * negative = discharging -> the battery is NOT the bottleneck; a
+      #     discharge must never be read as "the battery cannot take power" and
+      #     must never curtail the array
+      # While the Victron pair is not readable (missing sensor, integration
+      # restart) the Seplos power is used, so the package keeps working without
+      # the Victron sensors.
+      - name: "EMS battery charge power"
+        unique_id: ems_battery_charge_power
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        icon: mdi:battery-arrow-up-outline
+        availability: >-
+          {{- (has_value('sensor.serialbattery_seplos_dc_bus_spannung')
+               and has_value('sensor.venus_dc_batterie_stromstarke'))
+              or has_value('sensor.serialbattery_seplos_leistung') -}}
+        attributes:
+          source: >-
+            {{- 'victron (V x I)' if (has_value('sensor.serialbattery_seplos_dc_bus_spannung')
+                 and has_value('sensor.venus_dc_batterie_stromstarke')) else 'seplos' -}}
+          voltage: "{{ states('sensor.serialbattery_seplos_dc_bus_spannung') }}"
+          current: "{{ states('sensor.venus_dc_batterie_stromstarke') }}"
+        state: >-
+          {%- set v = 'sensor.serialbattery_seplos_dc_bus_spannung' -%}
+          {%- set i = 'sensor.venus_dc_batterie_stromstarke' -%}
+          {%- if has_value(v) and has_value(i) -%}
+            {{ (states(v) | float(0) * states(i) | float(0)) | round(0) | int(0) }}
+          {%- else -%}
+            {{ states('sensor.serialbattery_seplos_leistung') }}
+          {%- endif -%}
+
+      # --- dynamic charge power limit ---------------------------------------
+      # battery voltage x "EMS max charge current" (DVCC / BMS CCL). The static
+      # "EMS max charge power" stays the hard ceiling, so a tuned value is never
+      # exceeded by surprise, and it is also the fallback when the voltage
+      # sensor is missing - the behaviour then is exactly the pre-1.9 one.
+      - name: "EMS charge power limit"
+        unique_id: ems_charge_power_limit
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        icon: mdi:battery-charging-high
+        availability: >-
+          {{- has_value('input_number.ems_max_charge_power') -}}
+        attributes:
+          dynamic: "{{ has_value('sensor.serialbattery_seplos_dc_bus_spannung') }}"
+          voltage: "{{ states('sensor.serialbattery_seplos_dc_bus_spannung') }}"
+          current_limit: "{{ states('input_number.ems_max_charge_current') }}"
+        state: >-
+          {%- set hard = states('input_number.ems_max_charge_power') | float(0) -%}
+          {%- set v = 'sensor.serialbattery_seplos_dc_bus_spannung' -%}
+          {%- set amps = states('input_number.ems_max_charge_current') | float(0) -%}
+          {%- if has_value(v) and amps > 0 -%}
+            {{ [((states(v) | float(0)) * amps) | round(0) | int(0),
+                hard | round(0) | int(0)] | min }}
+          {%- else -%}
+            {{ hard | round(0) | int(0) }}
+          {%- endif -%}
+
       # --- limit percentage to write (single source of truth) ---------------
       # BATTERY FIRST - and never on the back of a momentary export:
       #   FULL        PV = house load + battery charge power - bias
@@ -516,17 +626,22 @@ template:
           solar: "{{ states('sensor.solarleistung_gesamt') }}"
           active: "{{ state_attr('sensor.ems_inverter_capacity', 'active') }}"
           capacity: "{{ states('sensor.ems_inverter_capacity') }}"
-          # what the battery is allowed to take right now (display only)
+          # what the battery may take right now (display only)
           allowance: >-
-            {{- [states('input_number.ems_max_charge_power') | float(2500),
-                 states('input_number.ems_charge_allowance') | float(2500)]
-                | min | round(0) | int(0) -}}
+            {%- set cmax = states('sensor.ems_charge_power_limit') | float(0) -%}
+            {%- set cmax = (states('input_number.ems_max_charge_power') | float(2500))
+                           if cmax <= 0 else cmax -%}
+            {{- [cmax, states('input_number.ems_charge_allowance')
+                 | float(cmax)] | min | round(0) | int(0) -}}
           # how much charge power the state above asks the array for
           charge_push: >-
-            {%- set allow = [states('input_number.ems_max_charge_power') | float(2500),
-                             states('input_number.ems_charge_allowance') | float(2500)] | min -%}
+            {%- set cmax = states('sensor.ems_charge_power_limit') | float(0) -%}
+            {%- set cmax = (states('input_number.ems_max_charge_power') | float(2500))
+                           if cmax <= 0 else cmax -%}
+            {%- set allow = [cmax, states('input_number.ems_charge_allowance')
+                                   | float(cmax)] | min -%}
+            {%- set bat = states('sensor.ems_battery_charge_power') | float(0) -%}
             {%- set soc = states('sensor.serialbattery_seplos_ladestand') | float(0) -%}
-            {%- set bat = states('sensor.serialbattery_seplos_leistung') | float(0) -%}
             {%- set tol = states('input_number.ems_export_tolerance') | float(150) -%}
             {%- set stop = (states('sensor.ems_mode') == 'FULL'
                             and soc >= (states('input_number.ems_soc_stop') | float(100))
@@ -550,11 +665,24 @@ template:
             {%- set push = namespace(w=0) -%}
             {%- if mode == 'FULL' -%}
               {%- set soc = states('sensor.serialbattery_seplos_ladestand') | float(0) -%}
-              {%- set bat = states('sensor.serialbattery_seplos_leistung') | float(0) -%}
-              {%- set cmax = states('input_number.ems_max_charge_power') | float(2500) -%}
+              {#- the battery power: derived from the Victron DC bus
+                  (voltage x SIGNED current) when it is readable, otherwise the
+                  Seplos BMS power. Signed - positive = charging. -#}
+              {%- set cp = 'sensor.ems_battery_charge_power' -%}
+              {%- set bat = (states(cp) | float(0)) if has_value(cp)
+                             else (states('sensor.serialbattery_seplos_leistung') | float(0)) -%}
+              {#- the maximum charge power: battery voltage x charge current
+                  limit, falling back to the static helper (also the ceiling) -#}
+              {%- set cmax = states('sensor.ems_charge_power_limit') | float(0) -%}
+              {%- set cmax = (states('input_number.ems_max_charge_power') | float(2500))
+                             if cmax <= 0 else cmax -%}
               {%- set tol = states('input_number.ems_export_tolerance') | float(150) -%}
-              {#- the offer: configured maximum, capped by what the battery has
-                  been observed to accept (EMS charge allowance) -#}
+              {#- the offer: the dynamic maximum, capped by what the battery has
+                  been observed to accept (EMS charge allowance). The clamped
+                  push term below means the array is never asked for LESS than
+                  the battery is already taking, so a latched-down allowance
+                  cannot starve the charge - and 1.9.0 stops it from latching
+                  during an ESS ramp in the first place (lrn_rising). -#}
               {%- set allow = [cmax, states('input_number.ems_charge_allowance')
                                      | float(cmax)] | min -%}
               {#- SoC stop, honoured only while the battery really takes nothing,
@@ -693,6 +821,12 @@ script:
             continue_on_error: true
           - action: input_number.set_value
             target:
+              entity_id: input_number.ems_max_charge_current
+            data:
+              value: 50
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
               entity_id: input_number.ems_soc_stop
             data:
               value: 100
@@ -702,6 +836,12 @@ script:
               entity_id: input_number.ems_charge_allowance
             data:
               value: 2500
+            continue_on_error: true
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_bat_prev
+            data:
+              value: 0
             continue_on_error: true
           - action: input_number.set_value
             target:
@@ -775,9 +915,10 @@ script:
           logger: opendtu.zero_export
           message: >-
             DEFAULTS: EMS helpers set to the documented values - bias 20 W,
-            max charge 2500 W, allowance 2500 W, tolerance 150 W, grace 60 s,
-            re-probe 900 s, meter tolerance 100 W, settle 12 s, max step 10 %,
-            SoC stop 100 %, start grace 120 s, automatic mode on, manual 0 %.
+            max charge 2500 W, charge current 50 A, allowance 2500 W,
+            tolerance 150 W, grace 60 s, re-probe 900 s, meter tolerance 100 W,
+            settle 12 s, max step 10 %, SoC stop 100 %, start grace 120 s,
+            automatic mode on, manual 0 %.
 
 
 # =============================================================================
@@ -848,13 +989,28 @@ automation:
           lrn_ok: >-
             {{- is_state('input_boolean.ems_automatic', 'on')
                 and states('sensor.ems_mode') in ['FULL', 'NIGHT']
-                and has_value('sensor.serialbattery_seplos_leistung')
+                and has_value('sensor.ems_battery_charge_power')
                 and has_value('input_number.ems_charge_allowance') -}}
           lrn_full: "{{ states('sensor.ems_mode') == 'FULL' }}"
-          lrn_bat: "{{ states('sensor.serialbattery_seplos_leistung') | float(0) }}"
+          lrn_bat: "{{ states('sensor.ems_battery_charge_power') | float(0) }}"
+          # The BASELINE of the current export episode. It follows the battery
+          # up whenever the battery takes measurably more, so a still-rising
+          # charge power keeps resetting the grace instead of counting towards
+          # a cut. Only a charge power that has really PLATEAUED (below the
+          # offer, for the whole grace) is proof that the battery cannot use
+          # the offer. Without this an ESS ramp - which takes seconds to
+          # minutes - was read as "the battery refuses the power", the
+          # allowance was latched below the real acceptance and the array was
+          # held under the charge limit for hours (the reported failure).
+          lrn_rising: >-
+            {{- (states('sensor.ems_battery_charge_power') | float(0))
+                > (states('input_number.ems_bat_prev') | float(0)) + 50 -}}
           lrn_grid: "{{ states('sensor.ems_grid_power') | float(0) }}"
           lrn_tol: "{{ states('input_number.ems_export_tolerance') | float(150) }}"
-          lrn_cmax: "{{ states('input_number.ems_max_charge_power') | float(2500) }}"
+          lrn_cmax: >-
+            {%- set cmax = states('sensor.ems_charge_power_limit') | float(0) -%}
+            {{- cmax if cmax > 0
+                else (states('input_number.ems_max_charge_power') | float(2500)) -}}
           lrn_allow: "{{ states('input_number.ems_charge_allowance') | float(2500) }}"
           lrn_ticks: "{{ states('input_number.ems_export_ticks') | float(0) }}"
           lrn_exporting: >-
@@ -884,7 +1040,8 @@ automation:
               - condition: template
                 value_template: >-
                   {{- lrn_ticks + 1 >= lrn_needed
-                      and (lrn_allow - lrn_bat) > lrn_tol -}}
+                      and (lrn_allow - lrn_bat) > lrn_tol
+                      and not lrn_rising -}}
             then:
               # at most a 50 % cut per step and never below what the battery is
               # measurably taking: one bad reading cannot stop the charge, and
@@ -913,20 +1070,41 @@ automation:
                 data:
                   value: 0
             else:
-              - action: input_number.set_value
-                target:
-                  entity_id: input_number.ems_export_ticks
-                data:
-                  value: "{{ [lrn_ticks + 1, 99] | min | int(0) }}"
+              - if:
+                  - condition: template
+                    value_template: "{{ lrn_rising }}"
+                then:
+                  # the ESS is still ramping: not proof of anything. The grace
+                  # restarts, so it only counts once the charge has settled.
+                  - action: input_number.set_value
+                    target:
+                      entity_id: input_number.ems_export_ticks
+                    data:
+                      value: 0
+                else:
+                  - action: input_number.set_value
+                    target:
+                      entity_id: input_number.ems_export_ticks
+                    data:
+                      value: "{{ [lrn_ticks + 1, 99] | min | int(0) }}"
+      # quiet grid - or the battery is still catching up: the export episode is
+      # over or is not proof of anything yet. The grace restarts and the
+      # baseline follows the battery, so only a REAL plateau below the offer
+      # can be trimmed.
       - if:
           - condition: template
-            value_template: "{{ lrn_ok and not lrn_exporting and lrn_ticks > 0 }}"
+            value_template: "{{ lrn_ok and (not lrn_exporting or lrn_rising) }}"
         then:
           - action: input_number.set_value
             target:
               entity_id: input_number.ems_export_ticks
             data:
               value: 0
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.ems_bat_prev
+            data:
+              value: "{{ lrn_bat }}"
       # 2) the battery discharges -> the old estimate is worthless, the next
       #    charge starts at the configured maximum again (not while the array
       #    is exporting: then the estimate below is the right answer)

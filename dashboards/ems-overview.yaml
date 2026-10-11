@@ -1,8 +1,18 @@
 # =============================================================================
-#  OpenDTU EMS - Lovelace view
+#  OpenDTU EMS  -  Lovelace view 1 of 2:  "Energy"  (the everyday overview)
 # -----------------------------------------------------------------------------
-#  A ready-made overview: energy flow, operation modes, PV inputs, battery and
-#  grid, plus the controls and the diagnostics of the EMS package.
+#  WHAT THIS BOARD IS FOR
+#    The one you keep open. It answers "what is the system doing right now?"
+#    without any parameter you could accidentally change:
+#      1) live energy flow        grid / PV / battery / house, one picture
+#      2) status chips            mode, limit, charge offer, inverters, health
+#      3) key figures             SoC, EMS limit, battery charge, charge limit
+#      4) the day so far          PV / house / grid / battery + the EMS limit
+#      5) the controls you touch daily (kill switch, automatic mode, manual %)
+#
+#  TUNING IS NOT HERE.  It lives on view 2, dashboards/ems-expert.yaml, and even
+#  there it is only visible while input_boolean.ems_expert_mode is on - the
+#  "Expert mode" switch below flips it.
 #
 #  REQUIRED HACS FRONTEND CARDS (all in the HACS default repositories)
 #    - Power Flow Card Plus     flixlix/power-flow-card-plus
@@ -12,24 +22,22 @@
 #  Everything else is built into Home Assistant.
 #
 #  HOW TO USE
-#    Dashboard -> Edit -> three dot menu -> Raw configuration editor, then paste
-#    this under the existing "views:" key (keep the indentation!). Or create a
-#    new dashboard ("Start with an empty dashboard") and paste the whole file.
+#    New dashboard ("Start with an empty dashboard") -> Edit -> three dot menu ->
+#    Raw configuration editor -> paste this whole file.  Or paste the `cards:`
+#    list under an existing `views:` entry (keep the indentation).
 #
-#  EDIT: the per-inverter sensors marked "EDIT" below are guesses based on the
+#  EDIT: the per-inverter sensors in the PV chip are guesses based on the
 #  OpenDTU naming scheme. Find the real ids in Developer tools -> States
-#  (search for "ac_power"). Wrong ids do not break anything - the templates fall
-#  back to the totals.
+#  (search "ac_power"). Wrong ids do not break anything.
 # =============================================================================
 
 title: Energy
 path: energy
 icon: mdi:solar-power-variant
-theme: default
 
 cards:
   # ---------------------------------------------------------------------------
-  # 1) live energy flow: grid, solar, battery, house load
+  # 1) live energy flow
   #    sign conventions already match the card:
   #      grid     positive = import, negative = export
   #      battery  positive = charging, negative = discharging
@@ -41,7 +49,7 @@ cards:
     use_new_flow_rate_model: true
     min_expected_power: 10
     max_expected_power: 5000
-    kilo_threshold: 10000          # stay in W up to 10 kW
+    kilo_threshold: 10000
     display_zero_lines:
       mode: transparency
       transparency: 70
@@ -76,20 +84,17 @@ cards:
         state_of_charge: sensor.serialbattery_seplos_ladestand
         display_state: one_way
         color_state_of_charge_value: color_dynamically
-        # EDIT: show the Victron charge stage (Bulk / Absorption / Float) inside
-        # the battery circle by uncommenting this and using your entity id:
-        # secondary_info:
-        #   entity: sensor.victron_battery_state
       home:
         entity: sensor.ems_house_load
         name: House
-        override_state: true       # use our own load calculation
+        override_state: true
         color_icon: true
 
   # ---------------------------------------------------------------------------
-  # 2) operation modes and key numbers
+  # 2) status at a glance - one chip per question you actually ask
   # ---------------------------------------------------------------------------
   - type: custom:mushroom-chips-card
+    alignment: center
     chips:
       - type: template
         entity: sensor.ems_mode
@@ -116,8 +121,6 @@ cards:
         icon_color: indigo
         tap_action:
           action: more-info
-      # how much charge power the battery is offered / how much of the limit is
-      # meant for charging - the two numbers that explain the law
       - type: template
         entity: sensor.ems_limit_target
         icon: mdi:battery-arrow-up-outline
@@ -144,15 +147,6 @@ cards:
         tap_action:
           action: more-info
       - type: template
-        entity: sensor.ems_pv_delivery
-        icon: mdi:chart-bell-curve-cumulative
-        content: "delivery {{ states('sensor.ems_pv_delivery') }} %"
-        icon_color: >-
-          {{ 'green' if (states('sensor.ems_pv_delivery') | float(100)) >= 70
-             else 'orange' }}
-        tap_action:
-          action: more-info
-      - type: template
         entity: binary_sensor.ems_degraded
         icon: >-
           {{ 'mdi:alert-outline' if is_state('binary_sensor.ems_degraded', 'on')
@@ -163,21 +157,55 @@ cards:
           {{ 'red' if is_state('binary_sensor.ems_degraded', 'on') else 'green' }}
         tap_action:
           action: more-info
-      # the documented tuning defaults, in one action: confirmation first, then
-      # script.ems_set_defaults writes all 16 helpers (see the README section
-      # "Settings: what every value does")
-      - type: template
-        icon: mdi:backup-restore
-        content: restore defaults
-        icon_color: red
-        tap_action:
-          action: perform-action
-          perform_action: script.ems_set_defaults
-          confirmation:
-            text: Reset all 16 EMS tuning helpers to the documented defaults?
 
   # ---------------------------------------------------------------------------
-  # 3) trends: PV, house load, grid, battery (W) and the EMS limit (%)
+  # 3) the numbers that say whether the loop is doing its job
+  # ---------------------------------------------------------------------------
+  - type: grid
+    columns: 4
+    square: false
+    cards:
+      - type: gauge
+        entity: sensor.serialbattery_seplos_ladestand
+        name: SoC
+        min: 0
+        max: 100
+        needle: true
+        severity:
+          red: 20
+          yellow: 50
+          green: 80
+      - type: gauge
+        entity: sensor.ems_limit_target
+        name: EMS limit
+        min: 0
+        max: 100
+        needle: true
+        severity:
+          red: 5
+          yellow: 20
+          green: 40
+      - type: gauge
+        entity: sensor.ems_battery_charge_power
+        name: Battery charge
+        min: -2000
+        max: 3000
+        needle: true
+        severity:
+          red: -2000
+          yellow: -100
+          green: 100
+      - type: gauge
+        entity: sensor.ems_charge_power_limit
+        name: Charge power limit
+        min: 0
+        max: 3000
+        needle: true
+        severity:
+          grey: 0
+
+  # ---------------------------------------------------------------------------
+  # 4) the day so far: PV, house, grid, battery (W) and the EMS limit (%)
   # ---------------------------------------------------------------------------
   - type: custom:apexcharts-card
     header:
@@ -217,7 +245,7 @@ cards:
         yaxis_id: power
         color: "#44739e"
       - entity: sensor.ems_grid_power
-        name: Grid (+) / export (−)
+        name: Grid (+ import)
         yaxis_id: power
         color: "#e02b3f"
         color_threshold:
@@ -238,7 +266,7 @@ cards:
         opacity: 0.6
 
   # ---------------------------------------------------------------------------
-  # 4) battery state of charge and the manual controls
+  # 5) battery SoC history beside the daily controls
   # ---------------------------------------------------------------------------
   - type: grid
     columns: 2
@@ -266,7 +294,7 @@ cards:
           - value: 80
             color: "#43a047"
       - type: entities
-        title: EMS controls
+        title: Daily controls
         show_header_toggle: false
         entities:
           - entity: input_boolean.ems_enabled
@@ -274,22 +302,14 @@ cards:
           - entity: input_boolean.ems_automatic
             name: Automatic mode
           - entity: input_number.ems_manual_pct
-            name: Manual limit (automatic off)
-          - entity: input_boolean.ems_simulate_battery_loss
-            name: Test - simulate battery loss
-          - entity: input_number.ems_grid_bias
-          - entity: input_number.ems_settle_seconds
-          - entity: input_number.ems_max_step_pct
-          - entity: input_number.ems_hysteresis_pct
-          - entity: input_number.ems_failsafe_pct
-          - entity: input_number.ems_soc_stop
-          - entity: input_number.ems_export_tolerance
-          - entity: input_number.ems_export_grace
-          - entity: input_number.ems_reprobe_seconds
+            name: Manual limit (automatic mode off)
+          - entity: input_boolean.ems_expert_mode
+            name: Expert mode (reveal the tuning board)
           - entity: input_datetime.ems_last_apply
+            name: Last limit written
 
   # ---------------------------------------------------------------------------
-  # 5) diagnostics (useful while tuning)
+  # 6) one block of diagnostics and the pointer to the tuning board
   # ---------------------------------------------------------------------------
   - type: markdown
     title: EMS diagnostics
@@ -307,30 +327,12 @@ cards:
       **limit** {{ states('sensor.ems_limit_target') }} %
 
 
-      **last write** {{ states('input_datetime.ems_last_apply') }} ·
+      **charge power** {{ states('sensor.ems_battery_charge_power') }} W of
+      {{ states('sensor.ems_charge_power_limit') }} W allowed ·
+      **source** {{ state_attr('sensor.ems_battery_charge_power', 'source') }} ·
       **started** {{ states('input_datetime.ems_started_at') }}
 
 
-      **charge limit** {{ states('input_number.ems_max_charge_power') }} W ·
-      **SoC** {{ states('sensor.serialbattery_seplos_ladestand') }} % ·
-      **battery** {{ states('sensor.serialbattery_seplos_leistung') }} W
-
-
-      **offer (learned)** {{ states('input_number.ems_charge_allowance') }} W ·
-      **asked for charging** {{ state_attr('sensor.ems_limit_target', 'charge_push') }} W ·
-      **export ticks** {{ states('input_number.ems_export_ticks') }}
-
-  - type: entities
-    title: Source sensors
-    show_header_toggle: false
-    entities:
-      - entity: sensor.ems_grid_power
-      - entity: sensor.ems_house_load
-      - entity: sensor.solarleistung_gesamt
-      - entity: sensor.serialbattery_seplos_leistung
-      - entity: sensor.serialbattery_seplos_ladestand
-      - entity: binary_sensor.ems_degraded
-      - entity: sensor.ems_pv_delivery
-      - entity: sensor.ems_inverter_capacity
-      - entity: input_number.ems_charge_allowance
-      - entity: input_number.ems_export_ticks
+      Tuning, the learned charge offer and the full history are on the
+      **EMS Expert** view (`dashboards/ems-expert.yaml`) - switch
+      *Expert mode* on there to reveal the controls.

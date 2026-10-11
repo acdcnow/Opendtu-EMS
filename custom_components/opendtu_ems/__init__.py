@@ -5,7 +5,8 @@ installs that file (and the ready-made dashboard view) into the configuration
 folder, keeps it up to date and reports what it did:
 
 * `<config>/packages/opendtu_ems.yaml` - the package itself
-* `<config>/opendtu_ems/ems-overview.yaml` - the Lovelace view
+* `<config>/opendtu_ems/ems-overview.yaml` - the everyday Lovelace view
+* `<config>/opendtu_ems/ems-expert.yaml` - the diagnostics/tuning Lovelace view
 
 A local file is never overwritten without keeping a `<file>.bak` copy, and a
 local file from a newer release is left alone.
@@ -37,6 +38,7 @@ from .bundle import (
 from .const import (
     BUNDLE_DASHBOARD,
     BUNDLE_DIR,
+    BUNDLE_FILES,
     BUNDLE_PACKAGE,
     CONF_INSTALL,
     DOMAIN,
@@ -89,15 +91,12 @@ TypeData = EmsBundleData
 def install_all(
     config_dir: Path, bundle_dir: Path, *, allow_update: bool = False
 ) -> EmsBundleData:
-    """Install both bundled files. Pure filesystem work, run in an executor."""
+    """Install every bundled file. Pure filesystem work, run in an executor."""
     package_source = bundle_dir / BUNDLE_PACKAGE
-    results = (
-        install_file(package_source, config_dir / TARGET_PACKAGE, allow_update=allow_update),
-        install_file(
-            bundle_dir / BUNDLE_DASHBOARD,
-            config_dir / TARGET_DASHBOARD,
-            allow_update=allow_update,
-        ),
+    results = tuple(
+        install_file(bundle_dir / source, config_dir / target,
+                     allow_update=allow_update)
+        for source, target in BUNDLE_FILES
     )
 
     bundle_version = None
@@ -183,8 +182,7 @@ def _check_only(config_dir: Path, bundle_dir: Path) -> EmsBundleData:
             bundle_version = None
 
     results = []
-    for source, target in ((BUNDLE_PACKAGE, TARGET_PACKAGE),
-                           (BUNDLE_DASHBOARD, TARGET_DASHBOARD)):
+    for source, target in BUNDLE_FILES:
         path = config_dir / target
         version = None
         if path.is_file():

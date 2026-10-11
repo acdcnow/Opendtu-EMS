@@ -14,7 +14,7 @@ Everything the package creates, what it means and how to tune it.
 
 | Mode | Entered when | Target written |
 |---|---|---|
-| `FULL` | SoC and battery power are fresh and plausible, at least one grid meter is alive, solar is readable, at least one inverter is reachable | `house load + allowed charge power - bias`, clamped to the reachable capacity. The allowed charge power is `EMS max charge power` capped by the learned `EMS charge allowance`; the measured export is not part of the formula |
+| `FULL` | SoC and battery power are fresh and plausible, at least one grid meter is alive, solar is readable, at least one inverter is reachable | `house load + allowed charge power - bias`, clamped to the reachable capacity. The allowed charge power is the dynamic charge limit (`battery voltage × EMS max charge current`, capped at `EMS max charge power`) capped by the learned `EMS charge allowance`; the measured export is not part of the formula |
 | `STARTING` | less than `EMS start grace` (default 120 s) since the Home Assistant start event | nothing — waiting for the first sensor values and for the ESS to boot |
 | `NIGHT` | `sun.sun` is `below_horizon` **and** PV is below 200 W | nothing — solar-powered inverters sleep, this is a normal standby state |
 | `DTU_BLIND` | **no** inverter limit entity is readable (OpenDTU powered off, MQTT broker down, entity ids changed) | nothing — the loop stops writing and the watchdog raises *no inverter reachable* |
@@ -54,6 +54,7 @@ start, not something Home Assistant sets by itself. See
 | `input_boolean.ems_automatic` | on | automatic mode; off = manual override: `ems_manual_pct` is written to all inverters, every sensor is ignored, the learning is frozen and the watchdog stands down |
 | `input_boolean.ems_simulate_battery_loss` | off | forces `NO_BATTERY` to test the fail-safe |
 | `input_boolean.ems_verbose` | off | writes a diagnostic line per run to the log |
+| `input_boolean.ems_expert_mode` | off | dashboard switch only — the control loop never reads it. The *EMS Expert* view keeps the card with every adjustable parameter hidden until it is on. The helpers are always reachable under Settings → Devices & services → Helpers. |
 
 ### Numbers
 
@@ -62,9 +63,10 @@ start, not something Home Assistant sets by itself. See
 | `ems_manual_pct` | 0 | % | The limit written to all inverters while `EMS automatic mode` is off; ignored while it is on. `0` therefore switches the inverters off. |
 | `ems_grid_bias` | 20 | W | The grid target. It is subtracted from the PV target, so the loop aims at a small *import* and never sits exactly on the export boundary. Raise if your meter is noisy (the array then produces that much less). |
 | `ems_hysteresis_pct` | 2 | % | Minimum change before a write happens. Raise to reduce writes, lower to react to smaller deviations. |
-| `ems_max_charge_power` | 2500 | W | The charge power the array may feed the battery with. Derive it as `min(DVCC max A, BMS CCL) × battery voltage`. The learned `EMS charge allowance` can only go below it. |
+| `ems_max_charge_power` | 2500 | W | The **ceiling** for the charge power and the fallback when the battery voltage sensor is missing. The loop really offers `battery voltage × ems_max_charge_current`, capped at this value. The learned `EMS charge allowance` can only go below it. |
 | `ems_soc_stop` | 100 | % | At/above this SoC the EMS stops *asking* for charge power and only covers the house load. It counts only while the battery is measurably not charging, so a wrong or stuck SoC cannot cut the array. `100` = never stop. |
-| `ems_charge_allowance` | 2500 | W | **Learned, written by the loop.** The charge power the battery has been observed to accept. Cut when a lasting export shows that the battery cannot use the offer, reset to `EMS max charge power` whenever the battery discharges, probed upwards again after `EMS charge re-probe`. Set it by hand to cap the charge power manually. |
+| `ems_charge_allowance` | 2500 | W | **Learned, written by the loop.** The charge power the battery has been observed to accept. Cut when a lasting export shows that the battery cannot use the offer **and the charge power has stopped rising** (an ESS ramp is not a refusal — see below), reset to the charge power limit whenever the battery discharges, probed upwards again after `EMS charge re-probe`. Set it by hand to cap the charge power manually. |
+| `ems_bat_prev` | 0 | W | Internal, written by the loop: the **baseline of the current export episode**. While the battery keeps taking measurably more (> 50 W) it follows the battery up and the export grace restarts, so a still-ramping ESS can never be read as a refusal. Do not edit. |
 | `ems_export_tolerance` | 150 | W | An export up to this is ignored (meter noise, Victron ramp, probe step). Do not set it to 0. |
 | `ems_export_grace` | 60 | s | How long an export above the tolerance may last before the battery is assumed not to take the offered power. Raise it if your Victron needs longer to ramp. |
 | `ems_export_ticks` | 0 | – | Internal counter of 15 s ticks with an export above the tolerance. 0 = quiet, ≥ the grace in ticks = the allowance is being cut. |
@@ -94,6 +96,8 @@ start, not something Home Assistant sets by itself. See
 | `sensor.ems_inverter_capacity` | reachable inverter capacity in W | `active` = number of inverters counted, `current_pct` = value currently set on them |
 | `sensor.ems_pv_delivery` | produced / commanded output in % | `expected_w`, `actual_w` |
 | `sensor.ems_house_load` | house consumption in W (`solar + grid - battery`) | – |
+| `sensor.ems_battery_charge_power` | battery power in W: `DC bus voltage × SIGNED battery current` (positive = charging), Seplos power as fallback | `source` = `victron (V x I)` / `seplos`, `voltage`, `current` |
+| `sensor.ems_charge_power_limit` | dynamic charge power limit in W: `DC bus voltage × EMS max charge current`, capped at `EMS max charge power` | `dynamic`, `voltage`, `current_limit` |
 | `sensor.ems_limit_target` | percentage to write | `mode`, `grid`, `solar`, `active`, `capacity`, `allowance` (W offered to the battery), `charge_push` (W asked from the array for charging) |
 | `binary_sensor.ems_degraded` | `on` in a fail-safe mode (a problem) | `mode`, `grid_source`, `grid_fallback` (meter in use — informational, not a fault) |
 
@@ -145,9 +149,10 @@ The loop therefore observes it:
 
 | Situation | Reaction |
 |---|---|
-| export above `EMS export tolerance` for more than `EMS export grace`, battery takes measurably less than offered | `EMS charge allowance` → what the battery is taking (at most a 50 % cut per step) |
-| battery discharges | `EMS charge allowance` → `EMS max charge power` (a new charge cycle starts) |
-| no export for `EMS charge re-probe` | `EMS charge allowance` ×1.5, capped at `EMS max charge power` |
+| export above `EMS export tolerance` for more than `EMS export grace`, battery takes measurably less than offered, **and the charge power is not rising any more** | `EMS charge allowance` → what the battery is taking (at most a 50 % cut per step) |
+| the charge power is still rising (the ESS is ramping towards its limit) | nothing is cut — the grace restarts. Without this, an ESS ramp was read as a refusal, the offer was latched below the battery's real acceptance and the array stayed cut while the battery was nowhere near its limit (fixed in 1.9.0) |
+| battery discharges | allowance → the charge power limit (a new charge cycle starts) |
+| no export for `EMS charge re-probe` | allowance ×1.5, capped at the charge power limit |
 | manual override active | nothing (the override also freezes the learning) |
 
 The price is explicit: every upward probe offers slightly more than the battery takes, so a

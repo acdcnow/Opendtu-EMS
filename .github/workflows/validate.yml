@@ -25,3 +25,6 @@ jobs:
 
       - name: Validate the HACS integration
         run: python tests/validate_integration.py
+
+      - name: Simulate a day at 10 s resolution
+        run: python tests/simulate_day.py packages/opendtu_ems.yaml

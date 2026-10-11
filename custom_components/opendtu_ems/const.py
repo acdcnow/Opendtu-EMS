@@ -17,10 +17,19 @@ NAME: Final = "OpenDTU Zero-Export EMS"
 BUNDLE_DIR: Final = "bundle"
 BUNDLE_PACKAGE: Final = "opendtu_ems.yaml"
 BUNDLE_DASHBOARD: Final = "ems-overview.yaml"
+BUNDLE_DASHBOARD_EXPERT: Final = "ems-expert.yaml"
 
 # where they are installed, relative to the Home Assistant config directory
 TARGET_PACKAGE: Final = "packages/opendtu_ems.yaml"
 TARGET_DASHBOARD: Final = "opendtu_ems/ems-overview.yaml"
+TARGET_DASHBOARD_EXPERT: Final = "opendtu_ems/ems-expert.yaml"
+
+# every bundled file and its target, in the order they are installed
+BUNDLE_FILES: Final = (
+    (BUNDLE_PACKAGE, TARGET_PACKAGE),
+    (BUNDLE_DASHBOARD, TARGET_DASHBOARD),
+    (BUNDLE_DASHBOARD_EXPERT, TARGET_DASHBOARD_EXPERT),
+)
 
 # configuration keys
 CONF_INSTALL: Final = "install"

@@ -168,8 +168,12 @@ BASE = {
     "input_number.ems_grid_bias": "20",
     "input_number.ems_hysteresis_pct": "2",
     "input_number.ems_max_charge_power": "2500",
+    "input_number.ems_max_charge_current": "50",
     "input_number.ems_soc_stop": "100",
     "input_number.ems_charge_allowance": "2500",
+    # 1.9.0: the battery power of the previous run. Equal to the base battery
+    # power, so the ramp guard (lrn_rising) is quiet in the frozen scenarios.
+    "input_number.ems_bat_prev": "1200",
     "input_number.ems_export_tolerance": "150",
     "input_number.ems_export_grace": "60",
     "input_number.ems_export_ticks": "0",
@@ -220,6 +224,31 @@ CONTROL_CASES = {
                                          "sensor.serialbattery_seplos_leistung": "800",
                                          "sensor.serialbattery_seplos_ladestand": "100"},
                                         "FULL", "shelly", -1000, 4700, 3, 88.9, True),
+    # 1.9.0: the charge power comes from the Victron DC bus (voltage x SIGNED
+    # current) whenever it is readable - the Seplos power (999 W here) is then
+    # ignored. 51.2 V x 23.44 A = 1200 W, exactly the documented base case, so
+    # the target is the same as "normal".
+    "V x I charge power (51.2 V x 23.44 A)": (
+        {**BASE, "sensor.serialbattery_seplos_dc_bus_spannung": "51.2",
+         "sensor.venus_dc_batterie_stromstarke": "23.44",
+         "sensor.serialbattery_seplos_leistung": "999"},
+        "FULL", "shelly", -234, 4700, 3, 86.1, True),
+    # a NEGATIVE current means discharging. It must not curtail the array: the
+    # discharge counts as load and the array covers it (same figure as the
+    # Seplos discharge case, so the sign handling is identical).
+    "V x I discharging (50 V x -16 A)": (
+        {**BASE, "sensor.serialbattery_seplos_dc_bus_spannung": "50.0",
+         "sensor.venus_dc_batterie_stromstarke": "-16.0",
+         "sensor.serialbattery_seplos_leistung": "999", S: "300", V: "300",
+         "sensor.solarleistung_gesamt": "500"},
+        "FULL", "shelly", 300, 4700, 3, 86.8, True),
+    # the dynamic charge power limit follows the pack voltage: 48 V x 50 A =
+    # 2400 W, so with the battery at 1200 W the offer is 1200 W
+    # (3000 - 234 + 1200 - 20 = 3946 W = 84.0 %), not the static 86.1 %.
+    "dynamic limit 48 V x 50 A = 2400 W": (
+        {**BASE, "sensor.serialbattery_seplos_dc_bus_spannung": "48.0",
+         "sensor.venus_dc_batterie_stromstarke": "25.0"},
+        "FULL", "shelly", -234, 4700, 3, 84.0, True),
     "primary meter DEAD": ({**BASE, S: "unavailable"},
                            "FULL", "victron", -240, 4700, 3, 86.0, True),
     "primary meter FROZEN": ({**BASE, f"__age:{S}": 600},
@@ -393,41 +422,49 @@ def main(argv: list[str]) -> int:
             created_entities |= {f"{domain}.{slugify(e.get('name'))}" for e in entities}
 
     # --- 1c. dashboard references ----------------------------------------
-    dashboard = ROOT / "dashboards" / "ems-overview.yaml"
-    if dashboard.exists():
+    # Every view in dashboards/ is checked: the custom card types must be
+    # documented HACS downloads, and every EMS-scope entity the YAML references
+    # must be created by the package (a stale id shows up as "Entity not
+    # available" in the card while the package itself is fine).
+    allowed_cards = {"custom:power-flow-card-plus", "custom:mushroom-chips-card",
+                     "custom:mushroom-number-card", "custom:mushroom-title-card",
+                     "custom:apexcharts-card", "custom:mini-graph-card"}
+    referenced: set[str] = set()
+
+    def walk(node):
+        if isinstance(node, dict):
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+        elif isinstance(node, str) and re.fullmatch(
+                r"(?:sensor|binary_sensor|input_boolean|input_number|input_datetime"
+                r"|script|automation)\.[a-z0-9_]+", node.strip()):
+            referenced.add(node.strip())
+
+    dashboards = sorted((ROOT / "dashboards").glob("*.yaml"))
+    for dashboard in dashboards:
         raw_dashboard = dashboard.read_text(encoding="utf-8")
         cards = set(re.findall(r"\btype:\s*(custom:[a-z0-9-]+)", raw_dashboard))
-        allowed_cards = {"custom:power-flow-card-plus", "custom:mushroom-chips-card",
-                         "custom:apexcharts-card", "custom:mini-graph-card"}
         unknown_cards = sorted(cards - allowed_cards)
         if unknown_cards:
-            fails.append(("dashboard cards", [f"undocumented: {unknown_cards}"]))
-        dash = yaml.safe_load(raw_dashboard)
-        referenced: set[str] = set()
+            fails.append((f"dashboard cards ({dashboard.name})",
+                          [f"undocumented: {unknown_cards}"]))
+        walk(yaml.safe_load(raw_dashboard))
+        print(f"  {dashboard.name}: {len(cards)} custom card types")
 
-        def walk(node):
-            if isinstance(node, dict):
-                for value in node.values():
-                    walk(value)
-            elif isinstance(node, list):
-                for value in node:
-                    walk(value)
-            elif isinstance(node, str) and re.fullmatch(
-                    r"(?:sensor|binary_sensor|input_boolean|input_number|input_datetime"
-                    r"|script|automation)\.[a-z0-9_]+", node.strip()):
-                referenced.add(node.strip())
-
-        walk(dash)
-        ems_scope = ("sensor.ems_", "binary_sensor.ems_", "input_", "script.ems",
-                     "automation.opendtu")
-        dangling = sorted(e for e in referenced
-                          if e.startswith(ems_scope) and e not in created_entities)
-        if dangling:
-            fails.append(("dashboard entities", [f"not created by the package: {dangling}"]))
-        external = sorted(referenced - created_entities - set(dangling))
-        print(f"  dashboard: {len(cards)} custom card types, "
-              f"{len(referenced)} entity references")
-        print(f"  existing (external) sensors used: {', '.join(external) or '-'}")
+    ems_scope = ("sensor.ems_", "binary_sensor.ems_", "input_", "script.ems",
+                 "automation.opendtu")
+    dangling = sorted(e for e in referenced
+                      if e.startswith(ems_scope) and e not in created_entities
+                      and e not in INTEGRATION_ENTITIES)
+    if dangling:
+        fails.append(("dashboard entities", [f"not created by the package: {dangling}"]))
+    external = sorted(referenced - created_entities - set(dangling))
+    print(f"  dashboards: {len(dashboards)} views, "
+          f"{len(referenced)} entity references")
+    print(f"  existing (external) sensors used: {', '.join(external) or '-'}")
 
     # --- 1d. documentation references -------------------------------------
     # The dashboard is checked above, the prose was not - and a snippet copied
@@ -623,6 +660,12 @@ def main(argv: list[str]) -> int:
         current = render(cap_sensor["attributes"]["current_pct"], d1)
         d2 = {**d1, "sensor.ems_inverter_capacity": capacity,
               "__cap_active": active, "__cap_current": current}
+        # 1.9.0: the two derived battery sensors feed everything below. They are
+        # rendered from the (optional) Victron DC bus pair and fall back to the
+        # Seplos power / the static helper when it is absent.
+        for uid in ("ems_battery_charge_power", "ems_charge_power_limit"):
+            if uid in sensors:
+                d2 = {**d2, f"sensor.{uid}": render(sensors[uid]["state"], d2)}
         mode = render(sensors["ems_mode"]["state"], d2)
         d3 = {**d2, "sensor.ems_mode": mode}
         target = render(sensors["ems_limit_target"]["state"], d3)
@@ -635,6 +678,8 @@ def main(argv: list[str]) -> int:
         d6 = {**d5, "sensor.ems_pv_delivery": delivered}
         return dict(grid=grid_value, source=source, capacity=capacity,
                     active=active, current=current, mode=mode, target=target,
+                    charge_power=d2.get("sensor.ems_battery_charge_power", "unknown"),
+                    charge_limit=d2.get("sensor.ems_charge_power_limit", "unknown"),
                     expected=expected, delivered=delivered,
                     write=render(write_cond, d6),
                     night=render(night_cond, d6),
@@ -678,12 +723,14 @@ def main(argv: list[str]) -> int:
              "__age:input_number.ems_charge_allowance": 1200}
 
     def lrn_input(data):
-        """Resolve what the sensor chain would give the loop (grid + mode),
-        unless the case sets it explicitly."""
+        """Resolve what the sensor chain would give the loop (grid + mode +
+        the derived battery sensors), unless the case sets it explicitly."""
         got = chain(data)
         out = dict(data)
         out.setdefault("sensor.ems_grid_power", got["grid"])
         out.setdefault("sensor.ems_mode", got["mode"])
+        out.setdefault("sensor.ems_battery_charge_power", got["charge_power"])
+        out.setdefault("sensor.ems_charge_power_limit", got["charge_limit"])
         return out
 
     def lrn_env(data):
@@ -759,6 +806,25 @@ def main(argv: list[str]) -> int:
                                 "sensor.serialbattery_seplos_leistung": "1500"}))
     learned("trim: uses the measured battery power",
             ast.literal_eval(env.from_string(lrn_new_tpl).render().strip()), 1500)
+
+    # 1.9.0 ramp guard: an export while the charge power is still RISING is the
+    # ESS ramping, not proof that the battery cannot take the offer. Trimming
+    # here is what pinned the array below the charge limit in the day
+    # simulation (tests/simulate_day.py).
+    lrn_cond("no trim while the battery is still ramping",
+             {**EXPORTING, "input_number.ems_export_ticks": "9",
+              "sensor.ems_battery_charge_power": "1500",
+              "input_number.ems_bat_prev": "1000"}, lrn_trim, "False")
+    lrn_cond("trim once the charge power has settled",
+             {**EXPORTING, "input_number.ems_export_ticks": "9",
+              "sensor.ems_battery_charge_power": "1500",
+              "input_number.ems_bat_prev": "1500"}, lrn_trim, "True")
+    _, vals = lrn_env(lrn_input({**BASE, "sensor.ems_battery_charge_power": "900",
+                                 "input_number.ems_bat_prev": "800"}))
+    learned("lrn_rising: 900 W after 800 W -> True", vals["lrn_rising"], True)
+    _, vals = lrn_env(lrn_input({**BASE, "sensor.ems_battery_charge_power": "1200",
+                                 "input_number.ems_bat_prev": "1200"}))
+    learned("lrn_rising: 1200 W after 1200 W -> False", vals["lrn_rising"], False)
 
     # the discharge reset: a new charge cycle gets the full offer back
     lrn_cond("reset while discharging",
