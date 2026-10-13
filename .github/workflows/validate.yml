@@ -23,8 +23,18 @@ jobs:
       - name: Validate the package
         run: python tests/validate_package.py packages/opendtu_ems.yaml
 
+      - name: Render the dashboards
+        run: python tests/validate_dashboards.py packages/opendtu_ems.yaml
+
       - name: Validate the HACS integration
         run: python tests/validate_integration.py
 
       - name: Simulate a day at 10 s resolution
         run: python tests/simulate_day.py packages/opendtu_ems.yaml
+
+      # tests/validate_in_ha.py is deliberately NOT part of CI: it needs the full
+      # `homeassistant` package (a few hundred MB) and boots a real HA. Run it
+      # locally after a change to the package's schema keys - see its docstring.
+      #   python -m venv %TEMP%\havalidate\venv
+      #   %TEMP%\havalidate\venv\Scripts\python -m pip install homeassistant==2026.10.1
+      #   %TEMP%\havalidate\venv\Scripts\python tests/validate_in_ha.py

@@ -79,16 +79,22 @@ it is a read-only diagnostics page, and a stray tap cannot change a tuning value
 The switch is only a dashboard gate. The control loop never reads it, and every helper stays
 reachable under **Settings → Devices & services → Helpers** either way.
 
-## 4. Adjust the two EDIT markers
+## 4. Fill the sensor mapping
 
-Both are marked `EDIT` in the overview file and degrade gracefully if you leave them alone:
+There is **nothing to edit in the dashboards any more**: they use only EMS entities, and the
+foreign sensors arrive through the *sensor mapping* of the package (`input_text.ems_src_*`) —
+see the [sensor mapping](../README.md#the-sensor-mapping). While the mapping is incomplete the
+boards start with a **mapping gate card** that names every entry still missing, so an empty
+board reads as "not configured yet" instead of "broken".
 
-* **per-inverter power sensors** (`sensor.hm1500_ac_power`, `sensor.hms1600_a_ac_power`,
-  `sensor.hms1600_b_ac_power`) — shown as secondary information in the PV circle. Find the real
-  ids in Developer tools → States (search `ac_power`). If the ids do not exist, the chip shows
+Two entries only affect this board,
+and both degrade gracefully while they are empty:
+
+* **per-inverter power sensors** — `input_text.ems_src_inv1_power` … `input_text.ems_src_inv3_power`,
+  shown as the secondary information of the PV circle. While they are empty the chip shows
   `3 inputs` instead.
-* **Victron charge stage** (`sensor.victron_battery_state`) — appended to the mode chip
-  ("FULL · Bulk"). Use your Victron entity id; while it is missing, only the EMS mode is shown.
+* **Victron charge stage** — `input_text.ems_src_victron_state`, appended to the mode chip
+  (`FULL · Bulk`). While it is empty only the EMS mode is shown.
 
 ---
 
@@ -98,11 +104,12 @@ Both are marked `EDIT` in the overview file and degrade gracefully if you leave 
 
 | Card | Entities |
 |---|---|
-| Energy flow | grid `sensor.ems_grid_power` (secondary info: which meter, `source`), PV `sensor.solarleistung_gesamt` (secondary info: the three inputs), battery `sensor.serialbattery_seplos_leistung` + SoC `sensor.serialbattery_seplos_ladestand`, house `sensor.ems_house_load` with `override_state: true` |
+| **Mapping gate** (only while the mapping is incomplete) | `sensor.ems_map_status` and its `required_missing` / `optional_empty` attributes. Condition: `sensor.ems_map_status` is not `ok`. |
+| Energy flow | grid `sensor.ems_grid_power` (secondary info: which meter, `source`), PV `sensor.ems_solar_power` (secondary info: the three inputs), battery `sensor.ems_battery_power` + SoC `sensor.ems_battery_soc`, house `sensor.ems_house_load` with `override_state: true` |
 | Chips | `sensor.ems_mode` (+ Victron stage), `sensor.ems_limit_target`, **charge offer / push** (`allowance` and `charge_push` attributes), `sensor.ems_inverter_capacity` (`active`, W), `binary_sensor.ems_degraded` |
-| Gauges | `sensor.serialbattery_seplos_ladestand`, `sensor.ems_limit_target`, `sensor.ems_battery_charge_power`, `sensor.ems_charge_power_limit` |
-| Trends | `sensor.solarleistung_gesamt`, `sensor.ems_house_load`, `sensor.ems_grid_power` (green below 0 = export, red above = import), `sensor.serialbattery_seplos_leistung`, `sensor.ems_limit_target` (%) |
-| SoC graph | `sensor.serialbattery_seplos_ladestand` |
+| Gauges | `sensor.ems_battery_soc`, `sensor.ems_limit_target`, `sensor.ems_battery_charge_power`, `sensor.ems_charge_power_limit` |
+| Trends | `sensor.ems_solar_power`, `sensor.ems_house_load`, `sensor.ems_grid_power` (green below 0 = export, red above = import), `sensor.ems_battery_power`, `sensor.ems_limit_target` (%) |
+| SoC graph | `sensor.ems_battery_soc` |
 | Daily controls | `input_boolean.ems_enabled`, `input_boolean.ems_automatic`, `input_number.ems_manual_pct`, `input_boolean.ems_expert_mode`, `input_datetime.ems_last_apply` |
 | Diagnostics | `sensor.ems_pv_delivery` attributes, `sensor.ems_inverter_capacity` attributes, `sensor.ems_battery_charge_power` (+ `source`), `sensor.ems_charge_power_limit`, `input_datetime.ems_started_at` |
 
@@ -110,10 +117,11 @@ Both are marked `EDIT` in the overview file and degrade gracefully if you leave 
 
 | Card | Entities |
 |---|---|
+| **Mapping gate** (only while the mapping is incomplete) | `sensor.ems_map_status` + its `required_missing` / `optional_empty` attributes |
 | Status | `input_boolean.ems_expert_mode`, `input_boolean.ems_enabled`, `input_boolean.ems_automatic`, `sensor.ems_mode`, `binary_sensor.ems_degraded`, both `input_datetime`s |
 | Control law (markdown) | house load, grid, solar, `sensor.ems_limit_target` with its `allowance` / `charge_push` attributes |
 | History graph | `sensor.ems_limit_target`, `sensor.ems_grid_power`, `sensor.ems_battery_charge_power` |
-| Battery & charge power | `sensor.ems_battery_charge_power`, `sensor.ems_charge_power_limit`, `input_number.ems_charge_allowance`, the Seplos power and `sensor.serialbattery_seplos_dc_bus_spannung` / `sensor.venus_dc_batterie_stromstarke` for comparison |
+| Battery & charge power | `sensor.ems_battery_charge_power`, `sensor.ems_charge_power_limit`, `input_number.ems_charge_allowance`, the Seplos power and `sensor.ems_battery_voltage` / `sensor.ems_battery_current` for comparison |
 | Charge learning | `input_number.ems_bat_prev` (baseline), `input_number.ems_export_ticks`, `ems_export_tolerance`, `ems_export_grace`, `ems_reprobe_seconds` |
 | Charge chart | `sensor.ems_battery_charge_power`, `sensor.ems_charge_power_limit`, `input_number.ems_charge_allowance` |
 | Inverters | `sensor.ems_inverter_capacity`, `sensor.ems_pv_delivery`, `sensor.ems_grid_power`, `sensor.ems_house_load` + a delivery mini-graph |

@@ -30,6 +30,36 @@ icon: mdi:wrench-cog-outline
 
 cards:
   # ---------------------------------------------------------------------------
+  # 0) the MAPPING GATE - the same card as on the overview board. Every EMS
+  #    entity stays empty while the sensor mapping (section 1 of the package)
+  #    is incomplete, and this is the only explanation a user gets otherwise.
+  # ---------------------------------------------------------------------------
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: sensor.ems_map_status
+        state_not: "ok"
+    card:
+      type: markdown
+      content: >-
+        ### The sensor mapping is not complete
+
+        **{{ states('sensor.ems_map_status') }}** — the EMS reads every sensor
+        through the *sensor mapping* (section 1 of `packages/opendtu_ems.yaml`),
+        so the diagnostics below stay empty until the mapping is filled.
+
+        * required, still empty:
+          **{{ (state_attr('sensor.ems_map_status', 'required_missing') or []) | join(', ') or '—' }}**
+        * optional, still empty:
+          {{ (state_attr('sensor.ems_map_status', 'optional_empty') or []) | join(', ') or '—' }}
+
+        Fill it with the blueprint **OpenDTU EMS - the sensor names**
+        (Settings → Automations & scenes → Blueprints → *Create script* → run it
+        once) or by hand: Settings → Devices & services → **Helpers** →
+        *EMS source - …*. `sensor.ems_mode` stays `GRID_BLIND` / `NO_BATTERY`
+        until then.
+
+  # ---------------------------------------------------------------------------
   # 1) status, and the switch that reveals the tuning cards below
   # ---------------------------------------------------------------------------
   - type: entities
@@ -42,6 +72,8 @@ cards:
         name: EMS active (master switch)
       - entity: input_boolean.ems_automatic
         name: Automatic mode
+      - entity: input_boolean.ems_open_phase
+        name: Day-start open phase (array at 100 %)
       - entity: sensor.ems_mode
       - entity: binary_sensor.ems_degraded
         name: Degraded (a fail-safe mode is active)
@@ -60,7 +92,7 @@ cards:
       solar + grid − battery ·
       **grid** {{ states('sensor.ems_grid_power') }} W
       [{{ state_attr('sensor.ems_grid_power', 'source') }}] ·
-      **solar** {{ states('sensor.solarleistung_gesamt') }} W
+      **solar** {{ states('sensor.ems_solar_power') }} W
 
 
       **target** = house load + offer − bias
@@ -69,6 +101,11 @@ cards:
       {{ states('sensor.ems_inverter_capacity') }} W ·
       **offer** {{ state_attr('sensor.ems_limit_target', 'allowance') }} W ·
       **push** {{ state_attr('sensor.ems_limit_target', 'charge_push') }} W
+
+
+      **day start** phase `{{ state_attr('sensor.ems_limit_target', 'open_phase') }}` —
+      while it is `on` the array deliberately runs at 100 %, because there is
+      nothing to throttle yet (released at {{ state_attr('sensor.ems_limit_target', 'open_until') }}).
 
 
       *The offer is min(`EMS max charge power`, the learned
@@ -97,14 +134,16 @@ cards:
         name: Dynamic charge power limit (V x A)
       - entity: input_number.ems_charge_allowance
         name: Learned offer (may only go below the limit)
-      - entity: sensor.serialbattery_seplos_leistung
+      - entity: sensor.ems_battery_power
         name: Battery power (Seplos BMS, comparison)
-      - entity: sensor.serialbattery_seplos_dc_bus_spannung
+      - entity: sensor.ems_battery_voltage
         name: DC bus voltage
-      - entity: sensor.venus_dc_batterie_stromstarke
+      - entity: sensor.ems_battery_current
         name: Battery current (+ = charging)
-      - entity: sensor.serialbattery_seplos_ladestand
+      - entity: sensor.ems_battery_soc
         name: State of charge
+      - entity: sensor.ems_map_status
+        name: Sensor mapping (must read "ok")
 
   - type: custom:apexcharts-card
     header:
@@ -210,6 +249,14 @@ cards:
           entity: input_number.ems_soc_stop
           name: SoC stop charging
           icon: mdi:battery-check-outline
+          display_mode: slider
+        - type: custom:mushroom-title-card
+          title: Day start
+          subtitle: array open until there is something to throttle
+        - type: custom:mushroom-number-card
+          entity: input_number.ems_open_solar_w
+          name: Open until PV reaches (0 = off)
+          icon: mdi:weather-sunny
           display_mode: slider
         - type: custom:mushroom-title-card
           title: Grid and fail-safe

@@ -1,17 +1,17 @@
 # Installation
 
 Step-by-step guide for the OpenDTU Zero-Export EMS package.
-Entity IDs below are the ones of the reference installation (a Victron ESS with a Seplos
-battery, a Shelly 3EM Pro, a Victron smart meter and three Hoymiles inverters on an
-OpenDTU). Replace them with yours wherever they appear.
+The reference installation is a Victron ESS with a Seplos battery, a Shelly 3EM Pro, a
+Victron smart meter and three Hoymiles inverters on an OpenDTU — but **no entity id is
+written into the package any more**. You enter yours in the *sensor mapping*, once: see step 6
+below and the [sensor mapping](../README.md#the-sensor-mapping) in the README.
 
 > **Design background** (why the package works the way it does) lives in the wiki:
-> [Architecture Concept Document](https://github.com/acdcnow/opendtu-ems/wiki/Architecture-Concept-Document) ·
-> [Software Design Document](https://github.com/acdcnow/opendtu-ems/wiki/Software-Design-Document) ·
-> [Workflow Diagrams](https://github.com/acdcnow/opendtu-ems/wiki/Workflow-Diagrams).
-> Coming from **1.4.0 or older**, read the
-> [archived 1.4 control law](https://github.com/acdcnow/opendtu-ems/wiki/Archive-1.4-Control-Law)
-> first — two helpers disappear and the charging behaviour changes.
+> [How it works](https://github.com/acdcnow/opendtu-ems/wiki/How-It-Works) ·
+> [The charge-allowance learning](https://github.com/acdcnow/opendtu-ems/wiki/Charge-Allowance) ·
+> [The sensor mapping](https://github.com/acdcnow/opendtu-ems/wiki/Sensor-Mapping).
+> Coming from an older release, read
+> [Upgrading](https://github.com/acdcnow/opendtu-ems/wiki/Upgrading) first.
 
 ---
 
@@ -19,7 +19,7 @@ OpenDTU). Replace them with yours wherever they appear.
 
 | # | Requirement | How to check |
 |---|---|---|
-| 1 | Home Assistant **2026.9+** | Settings → About |
+| 1 | Home Assistant **2026.10.1+** | Settings → About |
 | 2 | `packages:` enabled | see step 3 |
 | 3 | one `number.<inverter>_limit_nonpersistent_relative` per inverter | Developer tools → States |
 | 4 | a grid meter sensor, positive = import | compare with a big load |
@@ -135,6 +135,9 @@ way to apply it (action `opendtu_ems.install_bundle`, the current file is kept a
 
    `sensor.ems_mode`, `sensor.ems_grid_power`, `sensor.ems_inverter_capacity`,
    `sensor.ems_pv_delivery`, `sensor.ems_house_load`, `sensor.ems_limit_target`,
+   `sensor.ems_battery_charge_power`, `sensor.ems_charge_power_limit`,
+   `sensor.ems_map_status`, `sensor.ems_solar_power`, `sensor.ems_battery_soc`,
+   `sensor.ems_battery_power`, `sensor.ems_battery_voltage`, `sensor.ems_battery_current`,
    `binary_sensor.ems_degraded`, `script.ems_apply`,
    `automation.opendtu_ems_loop`, `automation.opendtu_ems_watchdog`,
    `automation.opendtu_ems_boot`.
@@ -144,7 +147,18 @@ way to apply it (action `opendtu_ems.install_bundle`, the current file is kept a
    > `automation.opendtu_ems_loop`). If you rename an alias later, the registry keeps the old
    > entity id; find it by searching `opendtu` in Developer tools → States.
 
-6. Disable the old automation. Two writers on the same inverters will fight each other.
+6. **Fill the sensor mapping.** The package itself names no foreign entity, so until this is
+done the loop cannot read anything and `sensor.ems_mode` sits in `GRID_BLIND`/`NO_BATTERY`
+(and the boot automation says so). Either
+
+   * **Blueprint:** Settings → Automations & scenes → Blueprints → *OpenDTU EMS - the sensor
+     names* → **Create script** → fill the fields → save → **run the script once**, or
+   * **by hand:** Settings → Devices & services → **Helpers** → the `EMS source - …` rows.
+
+   `sensor.ems_map_status` must read `ok` afterwards; its `required_missing` and
+   `optional_empty` attributes name whatever is still empty.
+
+7. Disable the old automation. Two writers on the same inverters will fight each other.
 
 > **Not via HACS.** HACS has no repository type for packages (only `integration`, plugin/
 > dashboard, `theme`, `template`, `python_script`, `appdaemon`), so a custom repository entry
@@ -156,25 +170,32 @@ way to apply it (action `opendtu_ems.install_bundle`, the current file is kept a
 
 ## 3. Adapt to your installation
 
-### 3.1 Section 1 of the package
+### 3.1 The sensor mapping (section 1 of the package)
 
-The header block *"1) ENTITY IDS - EDIT HERE ONLY"* documents every entity the package
-reads. If a name differs, change it **everywhere** it appears (Search & Replace over the
-file, e.g. `sensor.shelly3mpro_total_active_power`).
+Section 1 declares the 15 `input_text` helpers the whole package reads its entity ids from.
+**Nothing in the templates has to be edited** — put your ids into those helpers (step 6 of the
+guide above, or the blueprint). The table in the README's
+[sensor mapping](../README.md#the-sensor-mapping) lists what each one must be, and
+`sensor.ems_map_status` tells you what is still missing.
+
+Renaming a sensor later is therefore a one-field change. Before 1.10.0 the ids were typed
+into ~60 places in this file and both dashboards, and a single rename broke the loop
+silently — that is why the mapping exists.
 
 ### 3.2 Inverter capacities
 
-In `sensor.ems_inverter_capacity` there is one map at the top of the `state:` template:
+The watt ratings of your inverters live in `sensor.ems_inverter_capacity`:
 
 ```jinja
-{%- set caps = {'number.hm1500_limit_nonpersistent_relative': 1500,
-                'number.hms1600_a_limit_nonpersistent_relative': 1600,
-                'number.hms1600_b_limit_nonpersistent_relative': 1600} -%}
+{%- set caps = [(states('input_text.ems_src_inv1_limit'), 1500),
+                (states('input_text.ems_src_inv2_limit'), 1600),
+                (states('input_text.ems_src_inv3_limit'), 1600)] -%}
 ```
 
 The numbers are the **AC rating** of each inverter (not the panel power). Add or remove rows
 for your fleet — the loop divides by their sum, so this map is what makes the redistribu-
-tion and the delivery check work.
+tion and the delivery check work. The *entity id* part comes from the mapping; you only edit
+the watt value here.
 
 ---
 

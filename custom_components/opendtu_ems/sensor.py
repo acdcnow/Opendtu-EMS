@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import EmsBundleData
-from .const import BUNDLE_PACKAGE, DOMAIN, TARGET_DASHBOARD, TARGET_PACKAGE
+from .const import BUNDLE_PACKAGE, DOMAIN, TARGET_BLUEPRINT, TARGET_DASHBOARD, TARGET_PACKAGE
 
 
 async def async_setup_entry(
@@ -49,6 +49,7 @@ class EmsBundleSensor(SensorEntity):
             "package_version": package.installed_version if package else None,
             "package_action": package.action if package else None,
             "dashboard": TARGET_DASHBOARD,
+            "blueprint": TARGET_BLUEPRINT,
             "packages_configured": data.packages_configured,
             "restart_required": data.changed,
             "update_available": bool(data.updates_available),

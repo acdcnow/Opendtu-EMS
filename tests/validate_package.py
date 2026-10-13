@@ -35,7 +35,7 @@ TOLERANCE = 0.15
 REF = dt.datetime(2026, 9, 19, 12, 0, 0, tzinfo=dt.timezone.utc)
 MISSING = {"unknown", "unavailable", "none", ""}
 
-S = "sensor.shelly3mpro_total_active_power"
+S = "sensor.shelly_3em_pro_leistung"
 V = "sensor.smart_meter_electric_consumption_w"
 I1 = "number.hm1500_limit_nonpersistent_relative"
 I2 = "number.hms1600_a_limit_nonpersistent_relative"
@@ -96,12 +96,28 @@ class States:
         return _Domain(self._data, name)
 
 
+class ThisState:
+    """Stand-in for `this` - the entity's own previous state in a template
+    entity (`this.state`). Defaults to "off", which is the first render."""
+
+    def __init__(self, state: str = "off") -> None:
+        self.state = state
+
+
 def make_env(data: dict, extra: dict | None = None):
     """Build a sandboxed Jinja environment with the Home Assistant functions."""
     env = ImmutableSandboxedEnvironment()
 
     def has_value(entity_id):
         return str(data.get(entity_id, "unknown")).lower() not in MISSING
+
+    def is_number(value):
+        """Home Assistant's is_number - used by the mapping mirrors."""
+        try:
+            float(str(value))
+            return True
+        except (TypeError, ValueError):
+            return False
 
     def state_attr(entity_id, attr):
         generic = data.get(f"__attr:{entity_id}:{attr}", "__miss__")
@@ -127,6 +143,8 @@ def make_env(data: dict, extra: dict | None = None):
     env.globals.update(
         states=States(data),
         has_value=has_value,
+        is_number=is_number,
+        this=ThisState(str(data.get("__this_state", "off"))),
         is_state=lambda e, c: str(data.get(e, "unknown")) == c,
         state_attr=state_attr,
         expand=expand,
@@ -164,11 +182,17 @@ BASE = {
     "input_boolean.ems_automatic": "on",
     "input_boolean.ems_simulate_battery_loss": "off",
     "input_boolean.ems_verbose": "off",
+    # the day-start open phase is a STATE: released unless a case arms it
+    "input_boolean.ems_open_phase": "off",
+    # no export episode in progress: the phase uses this counter as its
+    # "sustained export" memory (it is reset while the battery is still ramping)
+    "input_number.ems_export_ticks": "0",
     "input_number.ems_manual_pct": "0",
     "input_number.ems_grid_bias": "20",
     "input_number.ems_hysteresis_pct": "2",
     "input_number.ems_max_charge_power": "2500",
     "input_number.ems_max_charge_current": "50",
+    "input_number.ems_open_solar_w": "3500",
     "input_number.ems_soc_stop": "100",
     "input_number.ems_charge_allowance": "2500",
     # 1.9.0: the battery power of the previous run. Equal to the base battery
@@ -184,6 +208,28 @@ BASE = {
     "input_number.ems_settle_seconds": "0",   # logic tests act immediately
     "input_number.ems_max_step_pct": "100",   # slew disabled in logic tests
     I1: "50.0", I2: "50.0", I3: "50.0",      # inverters start at 50 %
+    # --- the sensor mapping (1.10.0) ---------------------------------------
+    # The package never contains a foreign entity id any more: it reads the id
+    # from an input_text helper and then reads THAT entity. These entries are
+    # the mapping of the reference installation, so the cases below can keep
+    # addressing the source sensors directly.
+    "input_text.ems_src_grid": S,
+    "input_text.ems_src_grid_backup": V,
+    "input_text.ems_src_solar": "sensor.solarleistung_gesamt",
+    # optional: left empty on purpose, so the EMS-calculated house load is what
+    # the reference (and every existing expectation, 1566 W) is built on
+    "input_text.ems_src_house_load": "",
+    "input_text.ems_src_batt_soc": "sensor.serialbattery_seplos_ladestand",
+    "input_text.ems_src_batt_power": "sensor.serialbattery_seplos_leistung",
+    "input_text.ems_src_batt_voltage": "sensor.serialbattery_seplos_dc_bus_spannung",
+    "input_text.ems_src_batt_current": "sensor.venus_dc_batterie_stromstarke",
+    "input_text.ems_src_inv1_limit": I1,
+    "input_text.ems_src_inv2_limit": I2,
+    "input_text.ems_src_inv3_limit": I3,
+    "input_text.ems_src_inv1_power": "sensor.hm1500_ac_power",
+    "input_text.ems_src_inv2_power": "sensor.hms1600_a_ac_power",
+    "input_text.ems_src_inv3_power": "sensor.hms1600_b_ac_power",
+    "input_text.ems_src_victron_state": "sensor.victron_battery_state",
 }
 
 # name: (data, mode, meter source, grid, capacity, active, target %, write?)
@@ -413,7 +459,7 @@ def main(argv: list[str]) -> int:
     # every entity the package creates - shared by the dashboard (1c) and the
     # documentation (1d) checks below
     created_entities = set()
-    for domain in ("input_boolean", "input_number", "input_datetime"):
+    for domain in ("input_boolean", "input_number", "input_datetime", "input_text"):
         created_entities |= {f"{domain}.{key}" for key in doc.get(domain, {})}
     created_entities |= {f"script.{key}" for key in doc.get("script", {})}
     created_entities |= expected_automations
@@ -440,7 +486,7 @@ def main(argv: list[str]) -> int:
                 walk(value)
         elif isinstance(node, str) and re.fullmatch(
                 r"(?:sensor|binary_sensor|input_boolean|input_number|input_datetime"
-                r"|script|automation)\.[a-z0-9_]+", node.strip()):
+                r"|input_text|script|automation)\.[a-z0-9_]+", node.strip()):
             referenced.add(node.strip())
 
     dashboards = sorted((ROOT / "dashboards").glob("*.yaml"))
@@ -477,7 +523,7 @@ def main(argv: list[str]) -> int:
     for source in [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]:
         for entity_id in re.findall(
                 r"\b(?:sensor|binary_sensor|input_boolean|input_number|input_datetime"
-                r"|script|automation)\.[a-z0-9_]+",
+                r"|input_text|script|automation)\.[a-z0-9_]+",
                 source.read_text(encoding="utf-8")):
             # "sensor.ems_*" used as a family name in a sentence is not a reference
             if entity_id.endswith("_") or not entity_id.startswith(doc_scope):
@@ -528,17 +574,25 @@ def main(argv: list[str]) -> int:
 
     # --- 3. consistency: written inverters == capacity map ----------------
     print("\n== consistency ==")
-    written = {action["target"]["entity_id"]
-               for action in doc["script"]["ems_apply"]["sequence"][1]["parallel"]}
+    # 1.10.0: neither the script nor the capacity sensor may name an inverter
+    # entity id any more - both name the MAPPING helper. Two things can drift:
+    # the helper-to-inverter assignment, and whether the script writes through
+    # the helper or (the classic bug) through a stale literal.
+    written = set(re.findall(r"input_text\.ems_src_inv\d_limit",
+                             str(doc["script"]["ems_apply"]["variables"])))
     cap_sensor = next(s for s in doc["template"][0]["sensor"]
                       if s["unique_id"] == "ems_inverter_capacity")
-    mapped = set(re.findall(r"'number\.[a-z0-9_]+'", cap_sensor["state"]))
-    mapped = {m.strip("'") for m in mapped}
+    mapped = set(re.findall(r"input_text\.ems_src_inv\d_limit", cap_sensor["state"]))
     print(f"  written by script : {sorted(written)}")
     print(f"  capacity map      : {sorted(mapped)}")
-    if written != mapped:
-        fails.append(("capacity map", sorted(written ^ mapped)))
+    if not written or written != mapped:
+        fails.append(("capacity map", sorted(written ^ mapped)
+                      or ["the script no longer names the mapping helpers"]))
         print("  !! the script and the capacity map disagree")
+    script_text = str(doc["script"]["ems_apply"])
+    for key in ("inv1", "inv2", "inv3"):
+        if f"{{{{ {key} }}}}" not in script_text:
+            fails.append(("ems_apply", [f"{key} is not written through the mapping"]))
 
     # --- 3b. the documented defaults cover every helper -------------------
     # Home Assistant creates an input_number without "initial" at its minimum
@@ -567,7 +621,12 @@ def main(argv: list[str]) -> int:
 
     # --- 4. behaviour -----------------------------------------------------
     sensors = {s["unique_id"]: s for s in doc["template"][0]["sensor"]}
-    bsens = {b["unique_id"]: b for b in doc["template"][1]["binary_sensor"]}
+    # "Grid Export Throttling Required" deliberately has NO unique_id: it existed
+    # as a hand-made entity before, and a new unique_id would make Home Assistant
+    # create a second entity next to the existing one. Key it by its name and
+    # derive the entity id the way HA does - from the slugified name.
+    bsens = {b.get("unique_id") or f"name:{slugify(b.get('name'))}": b
+             for b in doc["template"][1]["binary_sensor"]}
     grid, delivery = sensors["ems_grid_power"], sensors["ems_pv_delivery"]
     loop = automations["opendtu_ems_loop"]
     watch = automations["opendtu_ems_watchdog"]
@@ -650,7 +709,26 @@ def main(argv: list[str]) -> int:
                             if key.startswith("__var:")})
         return env.from_string(expr).render().strip()
 
+    MIRRORS = (("ems_solar_power", "ems_src_solar"),
+               ("ems_battery_soc", "ems_src_batt_soc"),
+               ("ems_battery_power", "ems_src_batt_power"),
+               ("ems_battery_voltage", "ems_src_batt_voltage"),
+               ("ems_battery_current", "ems_src_batt_current"))
+
+    def resolve_mapping(data):
+        """The sensor.ems_* mirrors: the value of the entity the mapping points
+        at, or "unavailable" when the entry is empty or the sensor has no value
+        (that is what the templates' availability does in Home Assistant)."""
+        out = {}
+        for uid, helper in MIRRORS:
+            source = str(data.get(f"input_text.{helper}", "") or "")
+            value = data.get(source, "unknown") if source else "unknown"
+            out[f"sensor.{uid}"] = (
+                "unavailable" if str(value).lower() in MISSING else value)
+        return out
+
     def chain(data):
+        data = {**data, **resolve_mapping(data)}
         grid_ok = render(grid["availability"], data) == "True"
         grid_value = render(grid["state"], data) if grid_ok else "unavailable"
         source = render(grid["attributes"]["source"], data)
@@ -864,6 +942,203 @@ def main(argv: list[str]) -> int:
     lrn_cond("no night stop in FULL", {**BASE, "sensor.ems_mode": "FULL"},
              night_cond, "False")
 
+    print("\n== day-start open phase (NOTES N) ==")
+    OPEN = {**BASE, "input_boolean.ems_open_phase": "on"}
+
+    def resolved(data):
+        """What the automations see: the full sensor chain. The arming and
+        release templates read sensor.ems_* (the resolved values), not the
+        mapped source entities, so the chain has to be rendered first."""
+        got = chain(data)
+        out = {**data, **resolve_mapping(data)}
+        out.setdefault("sensor.ems_grid_power", got["grid"])
+        out.setdefault("sensor.ems_mode", got["mode"])
+        out.setdefault("sensor.ems_battery_charge_power", got["charge_power"])
+        out.setdefault("sensor.ems_charge_power_limit", got["charge_limit"])
+        return out
+
+    # The array is held at 100 % while there is nothing to throttle: PV below
+    # "EMS open until solar", the battery still below its calculated maximum,
+    # no export and no SoC stop. Every release test is evaluated in the same
+    # render as the state, so the phase can never lag a write.
+    for name, data, mode, want in (
+            # --- held open -------------------------------------------------
+            ("day start: 300 W PV, battery has room",
+             {**OPEN, "sensor.solarleistung_gesamt": "300",
+              "sensor.serialbattery_seplos_leistung": "200", S: "50", V: "55"},
+             "FULL", 100.0),
+            ("day start: export tolerance not yet reached",
+             {**OPEN, "sensor.solarleistung_gesamt": "900",
+              "sensor.serialbattery_seplos_leistung": "600", S: "-149", V: "-149"},
+             "FULL", 100.0),
+            ("day start: a momentary export (ESS ramp) keeps it",
+             {**OPEN, "sensor.solarleistung_gesamt": "2000",
+              "sensor.serialbattery_seplos_leistung": "500", S: "-400", V: "-400",
+              "input_number.ems_export_ticks": "0"},
+             "FULL", 100.0),
+            # --- released --------------------------------------------------
+            ("released: PV at full production, battery at max",
+             {**OPEN, "sensor.solarleistung_gesamt": "3800",
+              "sensor.serialbattery_seplos_leistung": "2500", S: "-300", V: "-300"},
+             "FULL", 74.0),
+            ("released: battery at its calculated max",
+             {**OPEN, "sensor.solarleistung_gesamt": "1200",
+              "sensor.serialbattery_seplos_leistung": "2500", S: "50", V: "55"},
+             "FULL", 26.2),
+            ("released: a lasting export while the phase is on",
+             {**OPEN, "sensor.solarleistung_gesamt": "2000",
+              "sensor.serialbattery_seplos_leistung": "500", S: "-400", V: "-400",
+              "input_number.ems_export_ticks": "2"},
+             "FULL", 76.2),
+            ("released: SoC stop with the battery idle",
+             {**OPEN, "sensor.solarleistung_gesamt": "1200",
+              "sensor.serialbattery_seplos_leistung": "0",
+              "sensor.serialbattery_seplos_ladestand": "100", S: "50", V: "55"},
+             "FULL", 26.2),
+            ("released: threshold 0 W disables the phase",
+             {**OPEN, "input_number.ems_open_solar_w": "0",
+              "sensor.solarleistung_gesamt": "300",
+              "sensor.serialbattery_seplos_leistung": "200", S: "50", V: "55"},
+             "FULL", 55.96),
+            ("released: battery data gone (NO_BATTERY)",
+             {**OPEN, "sensor.solarleistung_gesamt": "300",
+              "sensor.serialbattery_seplos_leistung": "unknown", S: "50", V: "55"},
+             "NO_BATTERY", 7.0),
+    ):
+        got = chain(data)
+        why = []
+        if got["mode"] != mode:
+            why.append(f"mode={got['mode']}")
+        if abs(float(got["target"]) - want) > 0.06:
+            why.append(f"target={got['target']} want {want}")
+        if why:
+            fails.append((f"open phase: {name}", why))
+        print(f"  {'OK ' if not why else '!! '}{name:<44}{got['target']:>7}%"
+              f"   {'; '.join(why)}")
+
+    # the phase must be what makes the difference at day start - the same data
+    # with the latch released has to leave the array at "house + charge need"
+    got_closed = chain({**BASE, "sensor.solarleistung_gesamt": "300",
+                        "sensor.serialbattery_seplos_leistung": "200",
+                        S: "50", V: "55"})
+    if not 50 <= float(got_closed["target"]) <= 60:
+        fails.append(("open phase: closed day start",
+                      [f"target={got_closed['target']} - expected the charge-need "
+                       f"percentage (~56 %), i.e. the phase must change something"]))
+    print(f"  {'OK ' if 50 <= float(got_closed['target']) <= 60 else '!! '}"
+          f"same morning without the phase{'':<20}{got_closed['target']:>7}%")
+
+    # a cloud may never reduce the array: the target is feed forward, so a
+    # dropping PV reading (with the grid importing) pushes it UP
+    clouds = chain({**BASE, "sensor.solarleistung_gesamt": "900",
+                    "sensor.serialbattery_seplos_leistung": "600", S: "400", V: "405"})
+    why = []
+    if float(clouds["target"]) <= float(clouds["current"]):
+        why.append(f"target={clouds['target']} cur={clouds['current']} - a cloud must "
+                   f"not curtail the array")
+    if why:
+        fails.append(("open phase: clouds", why))
+    print(f"  {'OK ' if not why else '!! '}clouds do not curtail the array"
+          f"{'':<19}{clouds['target']:>7}%   (was {clouds['current']} %)")
+    lrn_cond("no allowance cut in bad weather (importing)",
+             {**BASE, "sensor.solarleistung_gesamt": "900",
+              "sensor.serialbattery_seplos_leistung": "600",
+              S: "400", V: "405", "input_number.ems_export_ticks": "9"},
+             lrn_tick, "False")
+
+    # the delivery check must stay quiet while the array is deliberately open:
+    # the commanded 100 % is not "an inverter has to deliver 4.7 kW now"
+    open_delivery = chain({**OPEN, "sensor.solarleistung_gesamt": "300",
+                           "sensor.serialbattery_seplos_leistung": "200",
+                           S: "50", V: "55"})
+    why = []
+    if float(open_delivery["delivered"]) != 100:
+        why.append(f"delivery={open_delivery['delivered']} (a cloud is not a fault)")
+    if open_delivery["delivery_alert"] != "False":
+        why.append(f"under-delivery alarm={open_delivery['delivery_alert']}")
+    if why:
+        fails.append(("open phase: delivery check silenced", why))
+    print(f"  {'OK ' if not why else '!! '}delivery check silenced while open"
+          f"{'':<16}{open_delivery['delivered']:>6}%   alarm={open_delivery['delivery_alert']}")
+
+    # --- arming (automation.opendtu_ems_day_start) -----------------------
+    day = automations["opendtu_ems_day_start"]
+    arm_tpl = next(c["value_template"] for c in day["conditions"]
+                   if c.get("condition") == "template")
+    sunrise = [t for t in day["triggers"] if t.get("trigger") == "sun"]
+    transitions = [(t.get("from"), t.get("to")) for t in day["triggers"]
+                   if t.get("trigger") == "state"]
+    ok_triggers = (bool(sunrise) and ("NIGHT", "FULL") in transitions
+                   and ("STARTING", "FULL") in transitions)
+    print(f"  {'OK ' if ok_triggers else '!! '}armed at sunrise and on NIGHT/STARTING"
+          f" -> FULL: {transitions}")
+    if not ok_triggers:
+        fails.append(("open phase: arming triggers", [str(transitions)]))
+    for name, data, want in (
+            ("sunrise, nothing produced yet",
+             {**BASE, "sensor.solarleistung_gesamt": "0",
+              "sensor.serialbattery_seplos_leistung": "0", S: "20", V: "22"}, True),
+            ("PV already at full production",
+             {**BASE, "sensor.solarleistung_gesamt": "3800",
+              "sensor.serialbattery_seplos_leistung": "1500", S: "-300", V: "-300"},
+             False),
+            ("battery already at its maximum",
+             {**BASE, "sensor.solarleistung_gesamt": "900",
+              "sensor.serialbattery_seplos_leistung": "2500", S: "200", V: "205"},
+             False),
+            ("already exporting",
+             {**BASE, "sensor.solarleistung_gesamt": "900",
+              "sensor.serialbattery_seplos_leistung": "600", S: "-400", V: "-400"},
+             False),
+            ("SoC stop with the battery idle",
+             {**BASE, "sensor.solarleistung_gesamt": "900",
+              "sensor.serialbattery_seplos_leistung": "0",
+              "sensor.serialbattery_seplos_ladestand": "100", S: "20", V: "22"},
+             False),
+            ("threshold 0 W = phase disabled",
+             {**BASE, "input_number.ems_open_solar_w": "0",
+              "sensor.solarleistung_gesamt": "100",
+              "sensor.serialbattery_seplos_leistung": "0", S: "20", V: "22"}, False),
+    ):
+        got = render(arm_tpl, resolved(data))
+        if got != str(want):
+            fails.append((f"arming: {name}", [got]))
+        print(f"  {'OK ' if got == str(want) else '!! '}arm on {name:<44}{got}")
+
+    # --- release (control loop, same tests as the sensor) ----------------
+    release_if = next(a["if"] for a in loop["actions"]
+                      if isinstance(a.get("if"), list)
+                      and any("ems_open_phase" in str(c) for c in a["if"]))
+    release_tpl = next(c["value_template"] for c in release_if
+                       if c.get("condition") == "template")
+    for name, data, want in (
+            ("a quiet morning keeps the phase",
+             {**OPEN, "sensor.solarleistung_gesamt": "300",
+              "sensor.serialbattery_seplos_leistung": "200", S: "50", V: "55"}, False),
+            ("PV at full production releases it",
+             {**OPEN, "sensor.solarleistung_gesamt": "3800",
+              "sensor.serialbattery_seplos_leistung": "1500", S: "50", V: "55"}, True),
+            ("battery at maximum releases it",
+             {**OPEN, "sensor.solarleistung_gesamt": "900",
+              "sensor.serialbattery_seplos_leistung": "2500", S: "50", V: "55"}, True),
+            ("an export releases it",
+             {**OPEN, "sensor.solarleistung_gesamt": "900",
+              "sensor.serialbattery_seplos_leistung": "600", S: "-400", V: "-400",
+              "input_number.ems_export_ticks": "2"}, True),
+            ("a momentary export (ESS ramp) does not",
+             {**OPEN, "sensor.solarleistung_gesamt": "900",
+              "sensor.serialbattery_seplos_leistung": "600", S: "-400", V: "-400",
+              "input_number.ems_export_ticks": "0"}, False),
+            ("night releases it",
+             {**OPEN, "sensor.ems_mode": "NIGHT",
+              "sensor.solarleistung_gesamt": "0",
+              "sensor.serialbattery_seplos_leistung": "0", S: "50", V: "55"}, True),
+    ):
+        got = render(release_tpl, resolved(data))
+        if got != str(want):
+            fails.append((f"release: {name}", [got]))
+        print(f"  {'OK ' if got == str(want) else '!! '}release on {name:<40}{got}")
+
     print("\n== house load (sensor.ems_house_load) ==")
     load_tpl = sensors["ems_house_load"]["state"]
     load_avail = sensors["ems_house_load"]["availability"]
@@ -878,6 +1153,7 @@ def main(argv: list[str]) -> int:
             ("battery sensor gone",
              {**BASE, "sensor.ems_grid_power": "-234",
               "sensor.serialbattery_seplos_leistung": "unavailable"}, None)):
+        data = {**data, **resolve_mapping(data)}   # the mapping mirrors
         available = render(load_avail, data) == "True"
         got = round(float(render(load_tpl, data))) if available else None
         why = []
@@ -1014,7 +1290,7 @@ def main(argv: list[str]) -> int:
                 "__attr:sensor.ems_inverter_capacity:active": str(active),
                 "__attr:sensor.ems_inverter_capacity:current_pct": "100",
                 "sensor.ems_grid_power": "400",
-                "sensor.solarleistung_gesamt": "3000"}
+                "sensor.ems_solar_power": "3000"}
         got = render(capacity_tpl, data)
         if got != str(expect):
             fails.append((f"capacity alert with {active} active", [got]))

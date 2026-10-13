@@ -28,15 +28,19 @@ What the harness does
 * steps the whole system at ``DT`` seconds (default 10 s, as requested)
 * models grid, PV, house load, a PV-driven ESS whose charge current *ramps*,
   and the battery SoC
-* prints a protocol (a table of the day) and asserts the two properties that
+* prints a protocol (a table of the day) and asserts the three properties that
   matter:
 
   1. **no premature curtailment** - while the battery is charging below its
      charge power limit, the array must not be cut below what the sun offers;
   2. **curtailment only at the limit** - once the battery *is* at its limit the
-     array is cut to ``house load + charge limit`` and nothing is exported.
+     array is cut to ``house load + charge limit`` and nothing is exported;
+  3. **the day-start open phase** - the array is opened to 100 % at the start of
+     the day and stays there until there is something to throttle (PV at full
+     production, the battery at its calculated maximum, an export): the first
+     write of the day is a full open, and the phase does not re-enter afterwards.
 
-Exit code 0 = both properties hold for the whole simulated day.
+Exit code 0 = all three properties hold for the whole simulated day.
 """
 
 from __future__ import annotations
@@ -144,6 +148,13 @@ SCENARIOS = {
 class Controller:
     """Extracts and renders the EMS templates straight from the package YAML."""
 
+    # sensor unique_id -> the mapping helper that names its source entity
+    MIRRORS = (("ems_solar_power", "ems_src_solar"),
+               ("ems_battery_soc", "ems_src_batt_soc"),
+               ("ems_battery_power", "ems_src_batt_power"),
+               ("ems_battery_voltage", "ems_src_batt_voltage"),
+               ("ems_battery_current", "ems_src_batt_current"))
+
     def __init__(self, package_path: Path) -> None:
         self.doc = yaml.safe_load(package_path.read_text(encoding="utf-8"))
         sensors = {s["unique_id"]: s for s in self.doc["template"][0]["sensor"]}
@@ -216,6 +227,16 @@ class Controller:
         self.write_cond = find(lambda t: "ems_settle_seconds" in t)[0]
         self.dtu_cond = next(c["value_template"] for c in loop["conditions"]
                              if "DTU_BLIND" in str(c.get("value_template", "")))
+        # the day-start open phase: armed by automation.opendtu_ems_day_start and
+        # released by the loop with the same tests the sensor state uses
+        daystart = automations["opendtu_ems_day_start"]
+        self.arm_cond = next(c["value_template"] for c in daystart["conditions"]
+                             if c.get("condition") == "template")
+        release_if = next(a["if"] for a in loop["actions"]
+                          if isinstance(a.get("if"), list)
+                          and any("ems_open_phase" in str(c) for c in a["if"]))
+        self.release_cond = next(c["value_template"] for c in release_if
+                                 if c.get("condition") == "template")
 
         # one environment, one mutable state dict - rendered thousands of times
         self.data = self._blank_state()
@@ -230,11 +251,14 @@ class Controller:
             "input_boolean.ems_simulate_battery_loss": "off",
             "input_boolean.ems_verbose": "off",
             "input_boolean.ems_expert_mode": "off",
+            # the day-start open phase - armed by the simulation at the day start
+            "input_boolean.ems_open_phase": "off",
             "input_number.ems_manual_pct": "0",
             "input_number.ems_grid_bias": "20",
             "input_number.ems_hysteresis_pct": "2",
             "input_number.ems_max_charge_power": str(int(CMS_MAX)),
             "input_number.ems_max_charge_current": "50",
+            "input_number.ems_open_solar_w": "3500",
             "input_number.ems_soc_stop": "100",
             "input_number.ems_charge_allowance": str(int(CMS_MAX)),
             "input_number.ems_bat_prev": "0",
@@ -250,6 +274,26 @@ class Controller:
             "input_number.ems_start_grace": "120",
             "sun.sun": "above_horizon",
             I1: "50.0", I2: "50.0", I3: "50.0",
+            # --- the sensor mapping (1.10.0) ---------------------------------
+            # The package reads no foreign entity id any more - it reads the id
+            # from an input_text helper first. Without these entries the sim sat
+            # in DTU_BLIND and never wrote anything (the two protocol properties
+            # below were vacuously true because they only look at FULL rows).
+            "input_text.ems_src_grid": S,
+            "input_text.ems_src_grid_backup": V,
+            "input_text.ems_src_solar": PV,
+            "input_text.ems_src_house_load": "",
+            "input_text.ems_src_batt_soc": SOC,
+            "input_text.ems_src_batt_power": BPOW,
+            "input_text.ems_src_batt_voltage": VBAT,
+            "input_text.ems_src_batt_current": IBAT,
+            "input_text.ems_src_inv1_limit": I1,
+            "input_text.ems_src_inv2_limit": I2,
+            "input_text.ems_src_inv3_limit": I3,
+            "input_text.ems_src_inv1_power": "",
+            "input_text.ems_src_inv2_power": "",
+            "input_text.ems_src_inv3_power": "",
+            "input_text.ems_src_victron_state": "",
             "__cap_active": "3", "__cap_current": "50.0",
             "__last_apply": vp.REF.timestamp() - 300,
         }
@@ -264,6 +308,13 @@ class Controller:
     def prepared(self, data: dict) -> dict:
         """Render the grid -> capacity -> mode chain and fold it back in."""
         d = data
+        # the mapping mirrors first: the templates below read sensor.ems_* and
+        # those are "the value of the entity the mapping points at"
+        for uid, helper in self.MIRRORS:
+            source = str(d.get(f"input_text.{helper}", "") or "")
+            value = d.get(source, "unknown") if source else "unknown"
+            d[f"sensor.{uid}"] = ("unavailable"
+                                  if str(value).lower() in vp.MISSING else value)
         grid_ok = self.render(self.grid["availability"]) == "True"
         grid_value = self.render(self.grid["state"]) if grid_ok else "unavailable"
         source = self.render(self.grid["attributes"]["source"])
@@ -288,6 +339,12 @@ class Controller:
     def run(self, data: dict) -> dict:
         """One loop execution. Returns the write decision and diagnostics."""
         d = self.prepared(data)
+        # the loop releases the day-start open phase BEFORE it snapshots the
+        # target, and applies the hand-over without waiting for the settle time
+        was_open = data["input_boolean.ems_open_phase"] == "on"
+        if was_open and self.render(self.release_cond) == "True":
+            data["input_boolean.ems_open_phase"] = "off"
+        self.env.globals["open_was"] = 1 if was_open else 0
         target_pct = self.render(self.target["state"])
         d["sensor.ems_limit_target"] = target_pct
         # the loop snapshots the target into an automation variable before it
@@ -295,7 +352,8 @@ class Controller:
         self.env.globals["target_pct"] = target_pct
 
         out = {"target": float(target_pct or 0), "allowance": None, "push": None,
-               "written": False, "mode": d["sensor.ems_mode"], "model": ""}
+               "written": False, "mode": d["sensor.ems_mode"], "model": "",
+               "open": data["input_boolean.ems_open_phase"] == "on"}
 
         # learning block - same order as the package
         values = {}
@@ -354,6 +412,16 @@ class Controller:
             return "V x I"
         return "seplos"
 
+    def arm(self, data: dict) -> bool:
+        """What automation.opendtu_ems_day_start does at sunrise and whenever
+        the mode becomes FULL: arm the open phase if the array is not already at
+        full production, the battery still has room and nothing is exporting."""
+        self.prepared(data)
+        if self.render(self.arm_cond) == "True":
+            data["input_boolean.ems_open_phase"] = "on"
+            return True
+        return False
+
     def _set_number(self, data: dict, key: str, value) -> None:
         data[f"input_number.{key}"] = str(value)
 
@@ -378,6 +446,10 @@ def simulate(controller: Controller, scenario: str = "day"):
     inv_pct = 50.0
     allowance_ts = vp.REF.timestamp()
     log = []
+    # the arming events of automation.opendtu_ems_day_start: sunrise and every
+    # transition of sensor.ems_mode into FULL
+    prev_mode = None
+    prev_sun = data.get("sun.sun")
 
     steps = int((DAY_END_MIN - DAY_START_MIN) * 60 / DT)
     for index in range(steps):
@@ -418,6 +490,16 @@ def simulate(controller: Controller, scenario: str = "day"):
 
         result = controller.run(data)
 
+        # the day-start automation reacts to the mode / sunrise (one step later,
+        # like the real automation which fires on the state change)
+        mode_now = data["sensor.ems_mode"]
+        sunrise = prev_sun != "above_horizon" and data["sun.sun"] == "above_horizon"
+        if (sunrise or prev_mode is None
+                or (prev_mode != "FULL" and mode_now == "FULL")):
+            if controller.arm(data):
+                result["mode"] = data["sensor.ems_mode"]
+        prev_mode, prev_sun = mode_now, data["sun.sun"]
+
         if data["input_number.ems_charge_allowance"] != before:
             allowance_ts = vp.REF.timestamp()
         if result["written"]:
@@ -432,7 +514,7 @@ def simulate(controller: Controller, scenario: str = "day"):
                         allowance=result["allowance"], push=result["push"],
                         ceiling=min(CMS_MAX, 50.0 * battery_voltage(soc)),
                         accept=accept, model=result["model"],
-                        wrote=result["written"]))
+                        wrote=result["written"], open=result["open"]))
 
     return log
 
@@ -441,14 +523,14 @@ def simulate(controller: Controller, scenario: str = "day"):
 # protocol
 # --------------------------------------------------------------------------- #
 def assess(log):
-    """Return the two properties as violation lists.
+    """Return the three properties as violation lists.
 
     The reference for "the battery is not at its limit" is the battery's TRUE
     acceptance (including the CV taper of the model), not the nominal limit: a
     battery near full really cannot take the offered power, and curtailing then
     is correct behaviour, not a premature cut.
     """
-    premature, missed = [], []
+    premature, missed, phase = [], [], []
     for row in log:
         offered = min(row["potential"], CAP)
         curtailed = (row["limit"] / 100.0 * CAP) < offered - 100.0
@@ -463,7 +545,32 @@ def assess(log):
             expected = row["load"] + row["ceiling"]
             if abs(row["pv"] - expected) > 300.0:
                 missed.append(row)
-    return premature, missed
+
+    # (3) the day-start open phase: armed at the day start, the first write of
+    # the day is the full open, no re-entry after the release
+    def violation(row, why):
+        return {"minute": row["minute"], "pv": row["pv"], "grid": row["grid"],
+                "limit": row["limit"], "why": why}
+
+    if not any(row["open"] for row in log):
+        phase.append(violation(log[0], "the phase was never armed"))
+    else:
+        first_write = next((row for row in log if row["wrote"]), None)
+        if first_write is not None and first_write["open"] and first_write["limit"] < 99.9:
+            phase.append(violation(first_write,
+                                   "the first write of the day was not a full open"))
+        closed = False
+        seen_open = False
+        for row in log:
+            if row["open"]:
+                if closed:
+                    phase.append(violation(row,
+                                           "the phase re-armed after the release"))
+                    break
+                seen_open = True
+            elif seen_open:
+                closed = True
+    return premature, missed, phase
 
 
 def report(log, scenario="day", quiet=False):
@@ -480,12 +587,15 @@ def report(log, scenario="day", quiet=False):
           "(seconds to minutes, as the package notes allow)")
     print("assertions      : (1) no curtailment while battery below its charge limit")
     print("                  (2) at the limit the array is cut to load + limit, no export")
+    print("                  (3) day-start open phase: 100 % until there is something "
+          "to throttle")
     print()
 
     print("--- the day (every 30 min, plus the charge start) -------------------"
           "------------------------------------")
     print(f"{'time':>5} {'PV pot':>7} {'PV act':>7} {'load':>6} {'bat':>7} "
-          f"{'SoC':>5} {'grid':>7} {'limit%':>7} {'allow':>6} {'push':>6} {'mode':>9}")
+          f"{'SoC':>5} {'grid':>7} {'limit%':>7} {'allow':>6} {'push':>6} {'mode':>9} "
+          f"{'phase':>5}")
     start = next((row for row in log if row["bat"] > 50.0), None)
     for row in log:
         if int(row["minute"]) % 30 and row is not start:
@@ -494,7 +604,8 @@ def report(log, scenario="day", quiet=False):
         print(f"{hm(row['minute']):>5} {row['potential']:>7.0f} {row['pv']:>7.0f} "
               f"{row['load']:>6.0f} {row['bat']:>7.0f} {row['soc']:>5.1f} "
               f"{row['grid']:>7.0f} {row['limit']:>7.1f} {row['allowance']:>6.0f} "
-              f"{row['push']:>6.0f} {row['mode']:>9}{mark}")
+              f"{row['push']:>6.0f} {row['mode']:>9} "
+              f"{'open' if row['open'] else '-':>5}{mark}")
     print()
 
     # 10 s detail around the moment the battery starts charging - this is the
@@ -513,7 +624,7 @@ def report(log, scenario="day", quiet=False):
                   f"{row['limit']:>7.1f} {row['allowance']:>6.0f} {row['push']:>6.0f}")
         print()
 
-    premature, missed = assess(log)
+    premature, missed, phase = assess(log)
 
     # exported energy after charging began (zero-export promise)
     charging = [r for r in log if r["bat"] > 50.0]
@@ -533,6 +644,14 @@ def report(log, scenario="day", quiet=False):
         print(f"charge limit reached    : {hm(reach['minute'])}")
     else:
         print("charge limit reached    : NEVER - the battery never got near its limit")
+    opened = [r for r in log if r["open"]]
+    if opened:
+        index = log.index(opened[-1])
+        until = log[index + 1] if index + 1 < len(log) else None
+        print(f"open phase (100 %)      : {hm(opened[0]['minute'])} -> "
+              f"{hm(until['minute']) if until else 'end of day'} "
+              f"({(index + 1) * DT / 60.0:.1f} min, released by "
+              f"{'PV at full production' if until and until['pv'] >= 3500 else 'the battery at its maximum'})")
     print(f"worst export while charging: {worst_export:.0f} W "
           f"(tolerance {EXPORT_TOL:.0f} W)")
     print(f"exported energy         : {export_energy:.2f} kWh")
@@ -553,8 +672,15 @@ def report(log, scenario="day", quiet=False):
               f"grid {row['grid']:.0f} W")
     if len(missed) > 6:
         print(f"      ... {len(missed) - 6} more")
+    print(f"violations (3) day-start open phase                    : {len(phase)}")
+    for row in phase[:6]:
+        print(f"      {hm(row['minute'])}  {row['why']}  "
+              f"(PV {row['pv']:.0f} W, grid {row['grid']:.0f} W, "
+              f"limit {row['limit']:.1f} %)")
+    if len(phase) > 6:
+        print(f"      ... {len(phase) - 6} more")
     print()
-    ok = not premature and not missed
+    ok = not premature and not missed and not phase
     print(f"RESULT: {'PASS' if ok else 'FAIL'}")
     print("=" * 100)
     return 0 if ok else 1

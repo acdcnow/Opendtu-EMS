@@ -3,10 +3,47 @@
 Everything the package creates, what it means and how to tune it.
 
 > The reasoning behind the control law, the mode ladder and the acceptance learning is in the
-> wiki: [Architecture Concept Document](https://github.com/acdcnow/opendtu-ems/wiki/Architecture-Concept-Document)
-> and [Software Design Document](https://github.com/acdcnow/opendtu-ems/wiki/Software-Design-Document)
-> (component design, formulas, invariants). The superseded 1.4.x behaviour is documented in
-> [Control law 1.4.x (archived)](https://github.com/acdcnow/opendtu-ems/wiki/Archive-1.4-Control-Law).
+> wiki: [How it works](https://github.com/acdcnow/opendtu-ems/wiki/How-It-Works) and
+> [The charge-allowance learning](https://github.com/acdcnow/opendtu-ems/wiki/Charge-Allowance)
+> (formulas, the ramp guard, what each knob trades away). The day-start open phase is described in
+> [How it works → Day start](https://github.com/acdcnow/opendtu-ems/wiki/How-It-Works),
+> and older control laws in [Upgrading](https://github.com/acdcnow/opendtu-ems/wiki/Upgrading).
+
+---
+
+## Sensor mapping (section 1 of the package)
+
+The package contains **no foreign entity id**. Section 1 declares 15 `input_text` helpers and
+every template, trigger, script and both dashboards read the ids from there:
+
+| Helper | Required | What it must be |
+|---|---|---|
+| `input_text.ems_src_grid` | ✔ | grid meter, positive = import |
+| `input_text.ems_src_grid_backup` | – | a second meter on the **same** metering point with the same sign |
+| `input_text.ems_src_solar` | ✔ | PV power, all inverters summed |
+| `input_text.ems_src_house_load` | – | your own house-consumption sensor. **Display only** (the control law never reads the house load): `sensor.ems_house_load` prefers it over its own `solar + grid − battery` |
+| `input_text.ems_src_batt_soc` | ✔ | battery state of charge, % |
+| `input_text.ems_src_batt_power` | ✔ | battery power, **signed — positive = charging** |
+| `input_text.ems_src_batt_voltage` | – | battery / DC bus voltage, V |
+| `input_text.ems_src_batt_current` | – | battery current, **signed — positive = charging** |
+| `input_text.ems_src_inv1_limit` … `ems_src_inv3_limit` | ✔ | the three `number.*_limit_nonpersistent_relative` entities |
+| `input_text.ems_src_inv1_power` … `ems_src_inv3_power` | – | per-inverter AC power (dashboard only) |
+| `input_text.ems_src_victron_state` | – | Victron charge stage, e.g. `Bulk` (dashboard only) |
+
+Fill it with the blueprint `blueprints/script/opendtu_ems/ems_map_sensors.yaml`
+(Settings → Automations & scenes → Blueprints → *Create script* → run it once) or by hand in
+Settings → Devices & services → **Helpers**.
+
+`sensor.ems_map_status` is `ok` when every required entry is filled and otherwise reads
+*"N required source(s) missing"*, with `required_missing` and `optional_empty` listing the
+gaps. `automation.opendtu_ems_boot` raises a notification at every start until it is complete.
+
+The mapping helpers are `input_text` entities, so Home Assistant restores their values — they
+survive a restart and an update of the package (the `install_bundle` action replaces the file,
+not the helpers).
+
+The five `sensor.ems_*` mirrors below are what the templates and the dashboards actually use,
+so "rename a sensor" means "change one mapping entry".
 
 ---
 
@@ -17,7 +54,7 @@ Everything the package creates, what it means and how to tune it.
 | `FULL` | SoC and battery power are fresh and plausible, at least one grid meter is alive, solar is readable, at least one inverter is reachable | `house load + allowed charge power - bias`, clamped to the reachable capacity. The allowed charge power is the dynamic charge limit (`battery voltage × EMS max charge current`, capped at `EMS max charge power`) capped by the learned `EMS charge allowance`; the measured export is not part of the formula |
 | `STARTING` | less than `EMS start grace` (default 120 s) since the Home Assistant start event | nothing — waiting for the first sensor values and for the ESS to boot |
 | `NIGHT` | `sun.sun` is `below_horizon` **and** PV is below 200 W | nothing — solar-powered inverters sleep, this is a normal standby state |
-| `DTU_BLIND` | **no** inverter limit entity is readable (OpenDTU powered off, MQTT broker down, entity ids changed) | nothing — the loop stops writing and the watchdog raises *no inverter reachable* |
+| `DTU_BLIND` | **no** inverter limit entity is readable (OpenDTU powered off, MQTT broker down, the inverter entries of the mapping empty or wrong) | nothing — the loop stops writing and the watchdog raises *no inverter reachable* |
 | `GRID_BLIND` | neither grid meter has a value and a recent update, **or** the solar sensor is not readable while inverters are reachable (the house load cannot be computed) | `input_number.ems_failsafe_pct` (default 0 %) |
 | `NO_BATTERY` | SoC or battery power missing / stale (> 120 s power, > 300 s SoC) / outside 0–100 %, or the test switch is on | `load - bias` (zero export only — the charge term is dropped) |
 | `OFF` | `input_boolean.ems_enabled` is off | nothing is written |
@@ -52,6 +89,7 @@ start, not something Home Assistant sets by itself. See
 |---|---|---|
 | `input_boolean.ems_enabled` | on | master switch; off = no writes at all |
 | `input_boolean.ems_automatic` | on | automatic mode; off = manual override: `ems_manual_pct` is written to all inverters, every sensor is ignored, the learning is frozen and the watchdog stands down |
+| `input_boolean.ems_open_phase` | off | **Day start:** `on` = the array is held fully open at 100 %. Armed by `automation.opendtu_ems_day_start` at sunrise (and when the mode leaves `NIGHT`/`STARTING`), released by the control loop as soon as there is something to throttle — the battery at its calculated maximum, PV at `EMS open until solar`, a lasting export, or the SoC stop. A *state*, not a setting: switching it on by hand opens the array until one of those is true. |
 | `input_boolean.ems_simulate_battery_loss` | off | forces `NO_BATTERY` to test the fail-safe |
 | `input_boolean.ems_verbose` | off | writes a diagnostic line per run to the log |
 | `input_boolean.ems_expert_mode` | off | dashboard switch only — the control loop never reads it. The *EMS Expert* view keeps the card with every adjustable parameter hidden until it is on. The helpers are always reachable under Settings → Devices & services → Helpers. |
@@ -65,6 +103,7 @@ start, not something Home Assistant sets by itself. See
 | `ems_hysteresis_pct` | 2 | % | Minimum change before a write happens. Raise to reduce writes, lower to react to smaller deviations. |
 | `ems_max_charge_power` | 2500 | W | The **ceiling** for the charge power and the fallback when the battery voltage sensor is missing. The loop really offers `battery voltage × ems_max_charge_current`, capped at this value. The learned `EMS charge allowance` can only go below it. |
 | `ems_soc_stop` | 100 | % | At/above this SoC the EMS stops *asking* for charge power and only covers the house load. It counts only while the battery is measurably not charging, so a wrong or stuck SoC cannot cut the array. `100` = never stop. |
+| `ems_open_solar_w` | 3500 | W | **Day start:** the array stays wide open (100 %) while the real PV power is below this value *and* the battery is not yet charging at its calculated maximum *and* no lasting export is running. 3500 W is where the reference array (1× 1500 W + 2× 1600 W) is at full production. **`0` disables the day-start phase** — the EMS then regulates from the first watt. |
 | `ems_charge_allowance` | 2500 | W | **Learned, written by the loop.** The charge power the battery has been observed to accept. Cut when a lasting export shows that the battery cannot use the offer **and the charge power has stopped rising** (an ESS ramp is not a refusal — see below), reset to the charge power limit whenever the battery discharges, probed upwards again after `EMS charge re-probe`. Set it by hand to cap the charge power manually. |
 | `ems_bat_prev` | 0 | W | Internal, written by the loop: the **baseline of the current export episode**. While the battery keeps taking measurably more (> 50 W) it follows the battery up and the export grace restarts, so a still-ramping ESS can never be read as a refusal. Do not edit. |
 | `ems_export_tolerance` | 150 | W | An export up to this is ignored (meter noise, Victron ramp, probe step). Do not set it to 0. |
@@ -91,15 +130,31 @@ start, not something Home Assistant sets by itself. See
 
 | Entity | State | Attributes |
 |---|---|---|
+| `sensor.ems_map_status` | `ok`, or *"N required source(s) missing"* | `required_missing`, `optional_empty` |
+| `sensor.ems_solar_power` | the PV power the mapping points at | – |
+| `sensor.ems_battery_soc` | the battery SoC the mapping points at | – |
+| `sensor.ems_battery_power` | the SIGNED battery power the mapping points at (positive = charging) | – |
+| `sensor.ems_battery_voltage` | the mapped battery / DC bus voltage | – |
+| `sensor.ems_battery_current` | the mapped SIGNED battery current (positive = charging) | – |
 | `sensor.ems_grid_power` | grid power in W (positive = import) | `source` = `shelly` / `victron` / `disagree` / `none`, `shelly`, `victron` |
 | `sensor.ems_mode` | `FULL` / `NO_BATTERY` / `GRID_BLIND` / `OFF` | – |
 | `sensor.ems_inverter_capacity` | reachable inverter capacity in W | `active` = number of inverters counted, `current_pct` = value currently set on them |
 | `sensor.ems_pv_delivery` | produced / commanded output in % | `expected_w`, `actual_w` |
-| `sensor.ems_house_load` | house consumption in W (`solar + grid - battery`) | – |
+| `sensor.ems_house_load` | house consumption in W: the mapped `ems_src_house_load` when it is filled, otherwise `solar + grid - battery`. Display only | `source` = `mapped sensor` / `calculated` |
 | `sensor.ems_battery_charge_power` | battery power in W: `DC bus voltage × SIGNED battery current` (positive = charging), Seplos power as fallback | `source` = `victron (V x I)` / `seplos`, `voltage`, `current` |
 | `sensor.ems_charge_power_limit` | dynamic charge power limit in W: `DC bus voltage × EMS max charge current`, capped at `EMS max charge power` | `dynamic`, `voltage`, `current_limit` |
 | `sensor.ems_limit_target` | percentage to write | `mode`, `grid`, `solar`, `active`, `capacity`, `allowance` (W offered to the battery), `charge_push` (W asked from the array for charging) |
 | `binary_sensor.ems_degraded` | `on` in a fail-safe mode (a problem) | `mode`, `grid_source`, `grid_fallback` (meter in use — informational, not a fault) |
+| `binary_sensor.grid_export_throttling_required` | `on` while the grid exports more than the allowance of the moment (150 W from 90 % SoC, else 200 W, released at −50 W) — the *visible* version of the condition the allowance learning acts on | `grid`, `soc`, `threshold`, `release_at`, `battery`, `allowance`, `charge_push`, `mode` |
+| `binary_sensor.high_consumption_ac_mode` | `on` when the battery takes < 1200 W while the house draws > 1200 W, the grid is not exporting (> −300 W) and SoC < 90 % | `battery`, `grid`, `house_load`, `soc`, `mode` |
+
+> The last two are **carried over** from hand-made template sensors of the reference
+> installation, with the same entity ids, so nothing that used them had to change. They are
+> informational: no automation, no script and no control step reads them, so a wrong threshold
+> there can never cause an export. `binary_sensor.grid_export_throttling_required` is the useful
+> one (it is the only place where "the array is exporting right now" is visible);
+> `binary_sensor.high_consumption_ac_mode` is a mode flag for your own automations and can be
+> deleted if nothing consumes it (NOTES M in the package).
 
 ---
 
@@ -195,26 +250,27 @@ Availability alone cannot detect an inverter that stays `available` but produces
 The delivery check reports it (with a delay and a caveat), and it cannot identify which
 inverter is at fault.
 
-To make the loop *exclude* a dead inverter itself, extend the caps map in
+To make the loop *exclude* a dead inverter itself, map the per-inverter power sensors as
+`input_text.ems_src_inv1_power` … `ems_src_inv3_power` and extend the caps map in
 `sensor.ems_inverter_capacity`. OpenDTU publishes per inverter (MQTT topics):
-`<serial>/status/reachable`, `<serial>/status/producing`, `<serial>/0/power`. Find the
-resulting Home Assistant entity IDs in Developer tools → States (search for `ac_power` or
-`reachable`) and use them like this:
+`<serial>/status/reachable`, `<serial>/status/producing`, `<serial>/0/power`. The
+resulting Home Assistant entity IDs go into the mapping (Developer tools → States, search
+for `ac_power` or `reachable`), and the map is then used like this:
 
 ```jinja
-{%- set caps = {'number.hm1500_limit_nonpersistent_relative':
-                   {'w': 1500, 'power': 'sensor.hm1500_ac_power'},
-                'number.hms1600_a_limit_nonpersistent_relative':
-                   {'w': 1600, 'power': 'sensor.hms1600_a_ac_power'},
-                'number.hms1600_b_limit_nonpersistent_relative':
-                   {'w': 1600, 'power': 'sensor.hms1600_b_ac_power'}} -%}
+{%- set caps = [(states('input_text.ems_src_inv1_limit'), 1500,
+                 states('input_text.ems_src_inv1_power')),
+                (states('input_text.ems_src_inv2_limit'), 1600,
+                 states('input_text.ems_src_inv2_power')),
+                (states('input_text.ems_src_inv3_limit'), 1600,
+                 states('input_text.ems_src_inv3_power'))] -%}
 {%- set ns = namespace(cap=0, n=0, cur=-1) -%}
-{%- for e, i in caps.items() if has_value(e) -%}
+{%- for e, w, p in caps if e and has_value(e) -%}
   {#- only drop an inverter that produces nothing while the sun is up -#}
-  {%- set lost = has_value(i.power) and (states(i.power) | float(0)) < 5
-                 and (states('sensor.solarleistung_gesamt') | float(0)) > 200 -%}
+  {%- set lost = p and has_value(p) and (states(p) | float(0)) < 5
+                 and (states('sensor.ems_solar_power') | float(0)) > 200 -%}
   {%- if not lost -%}
-    {%- set ns.cap = ns.cap + i.w -%}
+    {%- set ns.cap = ns.cap + w -%}
     {%- set ns.n = ns.n + 1 -%}
     {%- if ns.cur < 0 -%}{%- set ns.cur = states(e) | float(-1) -%}{%- endif -%}
   {%- endif -%}
@@ -282,7 +338,7 @@ type: history-graph
 hours_to_show: 12
 entities:
   - entity: sensor.ems_grid_power
-  - entity: sensor.solarleistung_gesamt
+  - entity: sensor.ems_solar_power
   - entity: sensor.ems_limit_target
   - entity: sensor.ems_pv_delivery
 ```

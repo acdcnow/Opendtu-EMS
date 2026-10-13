@@ -26,9 +26,12 @@
 #    Raw configuration editor -> paste this whole file.  Or paste the `cards:`
 #    list under an existing `views:` entry (keep the indentation).
 #
-#  EDIT: the per-inverter sensors in the PV chip are guesses based on the
-#  OpenDTU naming scheme. Find the real ids in Developer tools -> States
-#  (search "ac_power"). Wrong ids do not break anything.
+#  NO ENTITY IDS TO EDIT: every foreign sensor is read through the SENSOR
+#  MAPPING of the package (input_text.ems_src_*). Fill it with the script
+#  blueprint "OpenDTU EMS - the sensor names". The PV chip falls back to
+#  "3 inputs" while ems_src_inv1_power .. inv3_power are empty, and the mode
+#  chip just omits the Victron stage while ems_src_victron_state is empty.
+#  sensor.ems_map_status says what is still missing.
 # =============================================================================
 
 title: Energy
@@ -36,6 +39,38 @@ path: energy
 icon: mdi:solar-power-variant
 
 cards:
+  # ---------------------------------------------------------------------------
+  # 0) the MAPPING GATE
+  #    Both boards are wired to the EMS sensors, and those stay empty until the
+  #    sensor mapping (section 1 of the package) says which sensors to read.
+  #    Without this card that looks like a broken dashboard; with it the reason
+  #    is on the board and disappears by itself once the mapping is filled.
+  # ---------------------------------------------------------------------------
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: sensor.ems_map_status
+        state_not: "ok"
+    card:
+      type: markdown
+      content: >-
+        ### The sensor mapping is not complete
+
+        **{{ states('sensor.ems_map_status') }}** — the EMS reads every sensor
+        through the *sensor mapping* (section 1 of `packages/opendtu_ems.yaml`),
+        so the cards below stay empty until the mapping is filled.
+
+        * required, still empty:
+          **{{ (state_attr('sensor.ems_map_status', 'required_missing') or []) | join(', ') or '—' }}**
+        * optional, still empty:
+          {{ (state_attr('sensor.ems_map_status', 'optional_empty') or []) | join(', ') or '—' }}
+
+        Fill it with the blueprint **OpenDTU EMS - the sensor names**
+        (Settings → Automations & scenes → Blueprints → *Create script* → run it
+        once) or by hand: Settings → Devices & services → **Helpers** →
+        *EMS source - …*. `sensor.ems_mode` stays `GRID_BLIND` / `NO_BATTERY`
+        until then.
+
   # ---------------------------------------------------------------------------
   # 1) live energy flow
   #    sign conventions already match the card:
@@ -64,24 +99,25 @@ cards:
           template: >-
             {{ state_attr('sensor.ems_grid_power', 'source') or '-' }}
       solar:
-        entity: sensor.solarleistung_gesamt
+        entity: sensor.ems_solar_power
         name: PV
         display_zero_state: true
         secondary_info:
           template: >-
-            {%- set ids = ['sensor.hm1500_ac_power',
-                           'sensor.hms1600_a_ac_power',
-                           'sensor.hms1600_b_ac_power'] -%}
+            {#- the three per-inverter power sensors come from the mapping -#}
+            {%- set ids = [states('input_text.ems_src_inv1_power'),
+                           states('input_text.ems_src_inv2_power'),
+                           states('input_text.ems_src_inv3_power')] -%}
             {%- set ns = namespace(vals=[]) -%}
-            {%- for i in ids if has_value(i) -%}
+            {%- for i in ids if i and has_value(i) -%}
               {%- set ns.vals = ns.vals + [(states(i) | float(0) | round(0) | int(0))] -%}
             {%- endfor -%}
             {%- if ns.vals | count -%}{{ ns.vals | join(' / ') }} W
             {%- else -%}3 inputs{%- endif -%}
       battery:
-        entity: sensor.serialbattery_seplos_leistung
+        entity: sensor.ems_battery_power
         name: Battery
-        state_of_charge: sensor.serialbattery_seplos_ladestand
+        state_of_charge: sensor.ems_battery_soc
         display_state: one_way
         color_state_of_charge_value: color_dynamically
       home:
@@ -102,8 +138,10 @@ cards:
         content: >-
           {%- set m = states('sensor.ems_mode') -%}
           {%- set v = '' -%}
-          {%- if has_value('sensor.victron_battery_state') -%}
-            {%- set v = ' · ' ~ states('sensor.victron_battery_state') -%}
+          {#- the Victron charge stage comes from the mapping (optional) -#}
+          {%- set stage = states('input_text.ems_src_victron_state') -%}
+          {%- if stage and has_value(stage) -%}
+            {%- set v = ' · ' ~ states(stage) -%}
           {%- endif -%}
           {{ m }}{{ v }}
         icon_color: >-
@@ -116,8 +154,15 @@ cards:
           action: more-info
       - type: template
         entity: sensor.ems_limit_target
-        icon: mdi:speedometer
-        content: "limit {{ states('sensor.ems_limit_target') }} %"
+        icon: >-
+          {{ 'mdi:weather-sunset-up' if is_state('input_boolean.ems_open_phase', 'on')
+             else 'mdi:speedometer' }}
+        content: >-
+          {%- if is_state('input_boolean.ems_open_phase', 'on') -%}
+            day start · array open
+          {%- else -%}
+            limit {{ states('sensor.ems_limit_target') }} %
+          {%- endif -%}
         icon_color: indigo
         tap_action:
           action: more-info
@@ -166,7 +211,7 @@ cards:
     square: false
     cards:
       - type: gauge
-        entity: sensor.serialbattery_seplos_ladestand
+        entity: sensor.ems_battery_soc
         name: SoC
         min: 0
         max: 100
@@ -234,7 +279,7 @@ cards:
         min: 0
         max: 100
     series:
-      - entity: sensor.solarleistung_gesamt
+      - entity: sensor.ems_solar_power
         name: PV
         type: area
         yaxis_id: power
@@ -253,7 +298,7 @@ cards:
             color: "#43a047"
           - value: 1
             color: "#e02b3f"
-      - entity: sensor.serialbattery_seplos_leistung
+      - entity: sensor.ems_battery_power
         name: Battery (+ charge)
         yaxis_id: power
         color: "#8e44ad"
@@ -276,7 +321,7 @@ cards:
         name: Battery state of charge
         icon: mdi:battery-heart-variant
         entities:
-          - entity: sensor.serialbattery_seplos_ladestand
+          - entity: sensor.ems_battery_soc
             name: SoC
         min: 0
         max: 100
@@ -323,6 +368,9 @@ cards:
 
       **commanded** {{ state_attr('sensor.ems_pv_delivery', 'expected_w') }} W ·
       **produced** {{ state_attr('sensor.ems_pv_delivery', 'actual_w') }} W
+
+
+      **sensor mapping** {{ states('sensor.ems_map_status') }}
       ({{ states('sensor.ems_pv_delivery') }} %) ·
       **limit** {{ states('sensor.ems_limit_target') }} %
 

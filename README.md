@@ -1,544 +1,340 @@
 # OpenDTU Zero-Export EMS for Home Assistant
 
-[![Validate package](https://github.com/acdcnow/opendtu-ems/actions/workflows/validate.yml/badge.svg)](https://github.com/acdcnow/opendtu-ems/actions/workflows/validate.yml)
-[![Release](https://img.shields.io/github/v/release/acdcnow/opendtu-ems)](https://github.com/acdcnow/opendtu-ems/releases)
-[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+[![Validate](https://github.com/acdcnow/opendtu-ems/actions/workflows/validate.yml/badge.svg)](https://github.com/acdcnow/opendtu-ems/actions/workflows/validate.yml)
+[![hacs](https://img.shields.io/badge/HACS-Integration-blue.svg)](https://hacs.xyz)
 [![Wiki](https://img.shields.io/badge/docs-wiki-blue)](https://github.com/acdcnow/opendtu-ems/wiki)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 
-A single-file Home Assistant package that runs a **battery-first, zero-export** energy
-management loop for Hoymiles micro-inverters controlled through
-[OpenDTU](https://github.com/tbnobody/OpenDTU) (or OpenDTU-OnBattery).
+**Release 1.10.0** · Home Assistant **2026.10.1+** · one YAML package · no custom component to write
 
-The loop holds the grid at a small import bias (+20 W by default) and gives the battery
-every watt it can take — but it never exports, not even when a sensor or a micro-inverter
-dies.
+A **battery-first, zero-export** energy management loop for Hoymiles micro-inverters driven by
+[OpenDTU](https://github.com/tbnobody/OpenDTU) (OpenDTU-OnBattery works too), next to a Victron ESS
+and a Seplos battery.
 
-> **Current release: 1.9.0** · Home Assistant **2026.9 or newer** · GPL-3.0
+The EMS is **one file**: `packages/opendtu_ems.yaml`. It creates its own helpers, sensors, scripts
+and automations, computes one percentage for all inverters from the wattage the battery can still
+take, learns the battery's real charge acceptance by itself and fails soft when a sensor
+disappears. The HACS integration only installs and updates that file (plus two dashboards and a
+blueprint).
 
-## What 1.9.0 changes
+---
 
-* **The array is no longer held below what the battery can take while the ESS is still
-  ramping.** An export that outlasts `EMS export grace` only counts as *"the battery refuses
-  the offer"* once the charge power has **stopped rising**. This is the fix for *"the solar
-  power is set down even when the battery is not charging to its limit"*.
-* **Dynamic charge power** — `sensor.ems_battery_charge_power` is the Victron DC bus
-  (`DC bus voltage × signed battery current`, Seplos power as fallback) and
-  `sensor.ems_charge_power_limit` is `battery voltage × EMS max charge current`, capped at
-  `EMS max charge power`.
-* **Two dashboards** — `ems-overview.yaml` (everyday) and `ems-expert.yaml` (diagnostics and
-  tuning, revealed only while `input_boolean.ems_expert_mode` is on).
-* **New helper** `input_number.ems_max_charge_current` (default 50 A) and the internal
-  `input_number.ems_bat_prev`.
-* **`tests/simulate_day.py`** renders the real templates at 10 s resolution and is part of CI.
+## The four rules behind it
 
-Full notes: [CHANGELOG.md](CHANGELOG.md) · older releases:
-[Changelog archive](https://github.com/acdcnow/opendtu-ems/wiki/Changelog-Archive)
+1. **Battery first.** The array may produce everything the *house load plus the battery charge
+   power* needs — never "everything the sun gives".
+2. **Never export.** The loop aims at a small grid **import** (`EMS grid bias`, +20 W by default),
+   so the export boundary is never touched. A second grid meter can take over seamlessly.
+3. **Learn, don't guess.** The array is only ever cut when a *lasting* export proves that the
+   battery cannot take what it is offered — and only down to what the battery is measurably
+   taking. An ESS that is still ramping is not proof of anything.
+4. **Fail soft.** No battery data → pure zero export. No grid data → a low fixed limit. No
+   inverter → nothing is written and you are told. A watchdog re-asserts the fail-safe limit if
+   the loop ever stops.
 
-## Highlights
+## What 1.10.0 changes
 
-* one YAML file: helpers, template sensors, two scripts and three automations
-* two ready-made dashboards — `dashboards/ems-overview.yaml` (everyday) and
-  `dashboards/ems-expert.yaml` (diagnostics + tuning) — see [docs/DASHBOARD.md](docs/DASHBOARD.md)
-* documented in depth in the [wiki](https://github.com/acdcnow/opendtu-ems/wiki):
-  [what it does and how](https://github.com/acdcnow/opendtu-ems/wiki/How-It-Works),
-  architecture concept, software design, workflow diagrams
-* HACS delivers the file and the dashboards — no custom component is written by you
-* written for **Home Assistant 2026.9+** (modern `triggers` / `conditions` / `actions` syntax)
-* 91 Jinja templates, parsed and rendered by CI on every push, plus a day simulation
+| | |
+| :--- | :--- |
+| **The sensor mapping** | The package contains **no foreign entity id** any more: 15 `input_text` helpers hold them, and a shipped blueprint asks for them. A renamed sensor is one field instead of ~60 places. |
+| **The day-start open phase** | At sunrise the array is held at **100 %** until there is something to throttle (the battery at its calculated maximum, PV at full production, or a lasting export). The morning is no longer capped at "house load + charge need" while the pack still has headroom. Set `EMS open until solar` = 0 to disable it. |
+| **Two diagnostic flags** | `binary_sensor.grid_export_throttling_required` and `binary_sensor.high_consumption_ac_mode` moved from a hand-made `template:` block into the package, with unchanged entity ids. **Delete your own copies.** Neither is read by the control law. |
+| **An optional house-load mapping** | Map your own consumption sensor and `sensor.ems_house_load` uses it instead of `solar + grid − battery` (display and diagnostics only). |
+| **Three bugs fixed** | Every inverter write was silently blocked by a template condition; `sensor.ems_map_status` always reported `ok`; the mapping mirrors rendered a string where a number is required. All three made the loop *look* fine while doing nothing. |
+
+Full list, with the migration steps: [CHANGELOG.md](CHANGELOG.md) ·
+[Upgrading](https://github.com/acdcnow/opendtu-ems/wiki/Upgrading).
 
 ---
 
 ## Table of contents
 
-- [What it does](#what-it-does)
-- [How it works](#how-it-works)
-- [The fail-safe ladder](#the-fail-safe-ladder)
-- [Entities it creates](#entities-it-creates)
-- [Requirements](#requirements)
-- [Install](#install)
-- [Settings: what every value does](#settings-what-every-value-does)
-- [Day-to-day use](#day-to-day-use)
-- [Why the relative limits](#why-the-relative-limits)
-- [Hardware backstop](#hardware-backstop)
-- [Alternatives](#alternatives)
-- [Documentation](#documentation)
-- [Safety and disclaimer](#safety-and-disclaimer)
-- [License](#license)
+* [Requirements](#requirements) · [Install](#install) · [The sensor mapping](#the-sensor-mapping)
+* [How it works](#how-it-works) · [The fail-safe ladder](#the-fail-safe-ladder)
+* [Settings: what every value does](#settings-what-every-value-does) · [Day-to-day use](#day-to-day-use)
+* [Tests](#tests) · [Files](#files) · [Hardware backstop](#hardware-backstop)
+* [Documentation](#documentation) · [License](#license)
 
 ---
 
-## What it does
-
-| Situation | Behaviour |
-|---|---|
-| Battery can take power, sun is available | PV is allowed to reach `house load + allowed charge power`, so every watt the battery can take is offered to it and the grid stays at +20 W. A momentary export (Victron ramp, a load switching off) does **not** cut the array |
-| The battery takes less than it is offered | The loop learns the real acceptance (`EMS charge allowance`) after `EMS export grace` and works at that level from then on, so the export stops without starving the charge — and it probes upwards again by itself |
-| Battery full (SoC `EMS SoC stop charging`, default 100 %) | PV covers the house load only, grid stays at +20 W. The stop counts only while the battery is measurably not charging, so a wrong SoC cannot cut the array |
-| One inverter offline | Its capacity share is redistributed to the remaining inverters (up to 100 % each) |
-| OpenDTU powered off / unplugged | `DTU_BLIND`: no writes, a notification says why, the loop resumes by itself |
-| Night, or Home Assistant just started | `NIGHT` / `STARTING`: nothing is written and nothing alarms until real data arrives and PV is possible |
-| Battery data lost | Pure zero export: `PV = house load - 20 W` (no charge push that could cause an export) |
-| Grid meter lost | The second (backup) meter takes over seamlessly; only if **both** are gone the inverters are set to a fail-safe limit |
-| Loop stopped / HA restarted | A watchdog re-asserts a safe limit and raises a notification |
-
-## How it works
-
-### The control law
-
-With `grid` positive = import and `battery power` positive = charging, the energy balance at
-the metering point is:
-
-```
-grid + solar = load + battery_charge
-```
-
-which turns the target into a very simple statement:
-
-```
-target_PV = load + allowed charge power - bias        (bias = 20 W of import)
-          = solar + grid + (allowance - battery_power) - bias
-```
-
-(`bias` is *subtracted*, so the loop settles at a small grid **import** and not at a small
-export.)
-
-That leads to the same figure from two directions: `solar + grid` measures the house load
-**without a load sensor**, and the energy balance says that the house load plus what the
-battery can take is exactly what the array may produce.
-
-The **measured export does not appear in the formula**. That is the important part: a Victron
-that is still ramping up, a load switching off or a lagging meter must not be read as
-"too much PV". Battery first means the array is only reduced when the battery really cannot
-use the power — and that is detected by measurement, not by an export that may be transient:
-
-1. **Charge acceptance learning.** If the grid exports more than `EMS export tolerance`
-   (150 W) for longer than `EMS export grace` (60 s) while the battery takes measurably less
-   than it is offered, the offer (`EMS charge allowance`) is cut to what the battery is really
-   taking, at most by half per step, so one bad reading cannot stop the charge.
-   **The cut additionally requires that the charge power has stopped rising.** While the ESS is
-   still climbing towards its limit the export is not proof of anything and the grace simply
-   restarts. The estimate is reset to the charge power limit whenever the battery discharges
-   (a new charge cycle), and probed upwards again (×1.5) after `EMS charge re-probe` (15 min)
-   without an export — so a battery that frees up is charged at full power again by itself.
-2. **Signed battery power.** Discharging must *increase* the target, so the raw signed value is
-   used, not a value clamped at zero. The charge power is derived from the Victron DC bus
-   (`voltage × signed current`) when it is readable, so a discharge (negative current) is
-   recognised as such and never curtails the array.
-3. **The SoC never throttles the array.** The only SoC effect is the stop above, and it is
-   corroborated by the battery power. A stuck or badly calibrated SoC can waste nothing.
-
-A **manual override** (`EMS automatic mode` off) steps outside this law completely: the fixed
-`EMS manual limit` percentage is written instead. The fail-safe ladder still *reports* the
-degraded mode, but it does not override your manual value.
-
-The loop reacts to grid crossings (5 s debounce) plus a 15 s heartbeat, writes with a
-hysteresis of 2 %, re-asserts the limit every 180 s and, to cope with the Victron ramp, waits
-`EMS settle time` after every write and limits increases to `EMS max step` (decreases are
-immediate). It also runs at night for the learning (that is when the battery discharges and the
-estimate is reset) but writes nothing then.
-
-## The fail-safe ladder
-
-| Mode | When | Action |
-|---|---|---|
-| `FULL` | all sensors plausible and fresh | `load + charge_limit - bias` |
-| `STARTING` | less than `EMS start grace` (default 120 s) since Home Assistant started | nothing — waiting for the first sensor values and for the ESS |
-| `NIGHT` | sun below the horizon and less than 200 W PV | nothing — the inverters are asleep, this is not a fault |
-| `DTU_BLIND` | no inverter limit entity is readable (OpenDTU off, MQTT down, ids changed) | nothing is written, *no inverter reachable* notification |
-| `NO_BATTERY` | SoC / battery power missing, stale, implausible or contradictory, or the test switch is on | `load - bias` (zero export only) |
-| `GRID_BLIND` | no usable grid reading, or no solar reading to compute the house load | fail-safe limit (default 0 %) — export impossible |
-| `OFF` | kill switch off | no writes |
-
-Additionally:
-
-* **watchdog** — no limit written for 300 s → notification + fail-safe write (the write also
-  refreshes the heartbeat, so the alarm is not repeated)
-* **no inverter reachable** — OpenDTU off / MQTT down → nothing is written and the watchdog says so
-* **PV capacity short** — fewer than 3 inverters reachable, they already run at 100 % and the
-  grid still imports
-* **PV under-delivering** — commanded output stays below 70 % and more than 800 W short for
-  ~6 minutes (a passing cloud does not raise it)
-
-## Entities it creates
-
-| Entity | Purpose |
-|---|---|
-| `sensor.ems_grid_power` | resolved grid power, attributes `source` (`shelly`/`victron`/`disagree`/`none`), `shelly`, `victron` |
-| `sensor.ems_mode` | `FULL`, `STARTING`, `NIGHT`, `DTU_BLIND`, `GRID_BLIND`, `NO_BATTERY` or `OFF` |
-| `sensor.ems_inverter_capacity` | reachable inverter capacity in W, attributes `active`, `current_pct` |
-| `sensor.ems_pv_delivery` | produced vs. commanded output in %, attributes `expected_w`, `actual_w` |
-| `sensor.ems_house_load` | house consumption in W, derived from `solar + grid - battery` |
-| `sensor.ems_battery_charge_power` | battery power in W, derived from the Victron DC bus (`DC bus voltage × SIGNED battery current`, positive = charging) and falling back to the Seplos power. Attributes `source`, `voltage`, `current` |
-| `sensor.ems_charge_power_limit` | the dynamic charge power limit in W: `DC bus voltage × EMS max charge current`, capped at `EMS max charge power`. Attributes `dynamic`, `voltage`, `current_limit` |
-| `sensor.ems_limit_target` | the percentage to write, attributes `mode`, `grid`, `solar`, `active`, `capacity`, `allowance` (W the battery may take), `charge_push` (W asked from the array) |
-| `binary_sensor.ems_degraded` | on only for the fail-safe modes (`DTU_BLIND`, `GRID_BLIND`, `NO_BATTERY`). Attributes `mode`, `grid_source` and `grid_fallback` show which meter is in use — a fallback to the backup meter or a disagreement between the two meters is **not** a problem |
-| `script.ems_apply` | writes one percentage to all governed inverters in parallel |
-| `script.ems_set_defaults` | restores the documented defaults of all 18 tuning helpers and switches automatic mode back on |
-| `automation.opendtu_ems_loop` | the control loop |
-| `automation.opendtu_ems_watchdog` | fail-safe + capacity/delivery monitoring |
-| `automation.opendtu_ems_boot` | records the start time, so the loop stays `STARTING` after a restart |
-
-Plus **25 helpers** (5 switches, 18 numbers, 2 date/times) — see
-[docs/CONFIGURATION.md](docs/CONFIGURATION.md). The HACS integration adds `sensor.ems_bundle`
-(installed version, action, `restart_required`, `update_available`).
-
 ## Requirements
 
-* Home Assistant **2026.9 or newer**
-* OpenDTU exposing a `number.<inverter>_limit_nonpersistent_relative` entity per inverter
-  (the relative limit reports immediately, the absolute one lags up to ~4 minutes)
-* a grid meter (Shelly 3EM Pro in the reference installation) and optionally a second one
-  as a live backup (Victron smart meter)
-* battery SoC and a **signed** battery power sensor (positive = charging)
-* a Victron ESS with DVCC where the charge current limit is configured (50 A in the
-  reference installation)
-* `packages:` enabled in `configuration.yaml`
+| | |
+| :--- | :--- |
+| Home Assistant | **2026.10.1 or newer**, with `packages:` enabled |
+| Inverters | one `number.<inverter>_limit_nonpersistent_relative` entity per micro-inverter |
+| Grid meter | anything publishing watts, **positive = import** (a Shelly 3EM Pro is the reference). A second meter can act as a live backup |
+| Battery | SoC **and** a *signed* power sensor (**positive = charging**) — a Seplos BMS, plus the Victron DC bus pair for the finer charge power |
+| OpenDTU | 1.1.12 recommended. **Avoid Hoymiles firmware 2.0.4** — it forgets non-persistent limits after ~4 minutes. The EMS re-asserts every 180 s, which papers over it |
 
 ## Install
 
-### Quick install (manual copy)
+### With HACS (recommended)
 
-1. Copy `packages/opendtu_ems.yaml` into your Home Assistant `<config>/packages/` folder.
-2. Enable packages in `configuration.yaml` **one of these two forms**:
-
-   ```yaml
-   homeassistant:
-     packages: !include_dir_named packages
-   ```
-
-   ```yaml
-   homeassistant:
-     packages:
-       opendtu_ems: !include packages/opendtu_ems.yaml
-   ```
-
-   (A bare `packages: !include packages/opendtu_ems.yaml` does **not** work — it produces
-   `Setup of package 'input_boolean' failed: Integration 'ems_enabled' not found.`)
-
-3. Restart Home Assistant and **disable the automation this package replaces**.
-4. Check `sensor.ems_mode`: it should read `FULL` while the sun is up.
-5. Set a **low persistent limit** on every inverter in the OpenDTU web UI (hardware backstop).
-
-Full walkthrough with verification and fail-safe tests: [docs/INSTALL.md](docs/INSTALL.md).
-
-### Install with HACS
-
-This repository is a **HACS integration** (`custom_components/opendtu_ems/`). The integration is
-deliberately small — the EMS stays one YAML package — but it is what makes HACS work: it ships
-that package and both dashboard views inside itself and installs them for you.
-
-1. HACS → ⋮ (top right) → **Custom repositories**
-2. Repository: `https://github.com/acdcnow/opendtu-ems` · Type: **Integration** → *Add*
-3. Search *OpenDTU Zero-Export EMS* in HACS → **Download** (HACS downloads the latest
-   **release**, so pick the version you want)
-4. **Restart Home Assistant** (a custom integration is only loaded at start-up)
-5. Settings → Devices & services → *Add integration* → **OpenDTU Zero-Export EMS** → confirm.
-   The integration writes:
-
-   | File | Content |
-   |---|---|
-   | `<config>/packages/opendtu_ems.yaml` | the EMS package |
-   | `<config>/opendtu_ems/ems-overview.yaml` | the everyday Lovelace view |
-   | `<config>/opendtu_ems/ems-expert.yaml` | the diagnostics/tuning view |
-
-   Existing files are **never replaced by setup**: the package is meant to be edited (section 1
-   holds your entity ids), so only missing files are created. Is a newer package bundled, you get
-   a notification and apply it yourself with the action `opendtu_ems.install_bundle`, which keeps
-   the current file as `.bak`. The result is shown in `sensor.ems_bundle` — and as a notification
-   **only when something happened** (a file was written, a newer one is bundled, or `packages:`
-   is missing). A routine restart notifies nobody.
-6. If the notification says that `packages:` is missing, add it once to `configuration.yaml`:
+1. HACS → ⋮ (top right) → **Custom repositories** →
+   `https://github.com/acdcnow/opendtu-ems`, type **Integration** → *Add*
+2. Search **OpenDTU Zero-Export EMS** → **Download** → **restart** Home Assistant
+3. Settings → Devices & services → *Add integration* → **OpenDTU Zero-Export EMS** → confirm.
+   It installs `packages/opendtu_ems.yaml`, both dashboards and the mapping blueprint.
+4. Add the `packages:` key to `configuration.yaml` (once) and restart:
 
    ```yaml
    homeassistant:
      packages: !include_dir_named packages
    ```
 
-7. **Restart** again — the entities appear (`sensor.ems_mode` = `FULL` while the sun is up).
+   If a `homeassistant:` block already exists, **merge** the key into it — a second block is not
+   allowed.
+5. Run the blueprint **OpenDTU EMS - the sensor names** (see below) or fill the helpers by hand.
+6. Set a **low persistent limit** on every inverter in the OpenDTU web UI — see
+   [Hardware backstop](#hardware-backstop).
 
-After a HACS update the new version is downloaded but not applied: run the action
-`opendtu_ems.install_bundle` (Developer tools → Actions) or re-add the integration, then restart.
-The action replaces the installed package: compare it with your own version first if you edited
-section 1; the previous file stays as `.bak`.
+### Manually
 
-Installing *without* HACS is supported and identical in effect — copy `packages/opendtu_ems.yaml`
-and, if you want, `dashboards/ems-overview.yaml` and `dashboards/ems-expert.yaml` by hand.
+Copy `packages/opendtu_ems.yaml` to `<config>/packages/`, the two files from `dashboards/` to
+`<config>/opendtu_ems/`, and `blueprints/script/opendtu_ems/ems_map_sensors.yaml` to
+`<config>/blueprints/script/opendtu_ems/`, then restart.
 
-### The four dashboard cards
+Updating: HACS downloads the version, the action **`opendtu_ems.install_bundle`** applies it (or
+re-add the integration), then restart. A file you edited is never overwritten — it is kept as
+`.bak`. Your sensor mapping survives every update, because it lives in `input_text` entities, not
+in the file that gets replaced.
 
-The dashboards use four cards that are separate HACS downloads (type **Dashboard**):
+## The sensor mapping
 
-| Card | Repository | Type |
-|---|---|---|
-| Power Flow Card Plus | `flixlix/power-flow-card-plus` | Dashboard |
-| Mushroom | `piitaya/lovelace-mushroom` | Dashboard |
-| ApexCharts Card | `RomRider/apexcharts-card` | Dashboard |
-| Mini Graph Card | `kalkih/mini-graph-card` | Dashboard |
+**The package contains no foreign entity id.** Section 1 declares 15 `input_text` helpers, and
+every template, trigger, script and dashboard reads the ids from there — so a renamed sensor is
+**one field**, not ~60 occurrences spread over two files.
 
-Search the name in HACS, Download, then paste the view — see
-[docs/DASHBOARD.md](docs/DASHBOARD.md) for the details.
+| Helper | Required | What it must be |
+| :--- | :---: | :--- |
+| `input_text.ems_src_grid` | ✔ | grid meter, **positive = import** |
+| `input_text.ems_src_grid_backup` | – | a second meter on the **same** metering point, same sign |
+| `input_text.ems_src_solar` | ✔ | PV power, all inverters summed |
+| `input_text.ems_src_house_load` | – | your own house-consumption sensor (display only) |
+| `input_text.ems_src_batt_soc` | ✔ | battery state of charge, % |
+| `input_text.ems_src_batt_power` | ✔ | battery power, **signed — positive = charging** |
+| `input_text.ems_src_batt_voltage` | – | battery / DC bus voltage, V |
+| `input_text.ems_src_batt_current` | – | battery current, **signed — positive = charging** |
+| `input_text.ems_src_inv1_limit` … `ems_src_inv3_limit` | ✔ | the three `number.*_limit_nonpersistent_relative` entities |
+| `input_text.ems_src_inv1_power` … `ems_src_inv3_power` | – | per-inverter AC power (dashboards only) |
+| `input_text.ems_src_victron_state` | – | Victron charge stage, e.g. `Bulk` (display only) |
 
-> Adding this repository with the type **Dashboard** (frontend/`plugin`) still fails with
-> *Repository structure … is not compliant*: a plugin must be a JavaScript file, and this is not
-> one. Use **Integration** or install by hand
-> ([TROUBLESHOOTING](docs/TROUBLESHOOTING.md#hacs-repository-structure-is-not-compliant)).
+Fill it with the shipped script blueprint
+`blueprints/script/opendtu_ems/ems_map_sensors.yaml`
+(Settings → Automations & scenes → **Blueprints** → *OpenDTU EMS - the sensor names* →
+*Create script* → run it once), or by hand in Settings → Devices & services → **Helpers**.
+
+`sensor.ems_map_status` reads **`ok`** when every required entry is filled, otherwise
+*"N required source(s) missing"*, with `required_missing` and `optional_empty` naming the gaps.
+An incomplete mapping is the one failure that would otherwise only show up as a permanently
+degraded mode — both dashboards start with a card that says so, and
+`automation.opendtu_ems_boot` notifies you at every start until it is complete.
+
+A **wrong** id (not an empty one) shows up as `unavailable` in Developer tools → States: the
+helper holds the id, but no entity exists. Renaming an entity in Home Assistant does not change
+the mapping — that is the point of it.
+
+> **The reference ids** the shipped tests run against: `sensor.shelly_3em_pro_leistung` (primary
+> grid) + `sensor.smart_meter_electric_consumption_w` (backup), `sensor.solarleistung_gesamt`,
+> `sensor.serialbattery_seplos_ladestand` / `_leistung` / `_dc_bus_spannung`,
+> `sensor.venus_dc_batterie_stromstarke` and the three
+> `number.hm1500_limit_nonpersistent_relative` / `number.hms1600_{a,b}_limit_nonpersistent_relative`.
+> For a different installation you change **nothing in the file** — you fill the mapping.
+
+## How it works
+
+`sensor.ems_limit_target` is the single source of truth: one percentage for all inverters.
+
+```
+offer   = min(EMS max charge power, EMS charge allowance)   # what the battery may take
+push    = max(offer − bat, 0)                               # what is still missing
+target  = clamp(solar + grid + push − EMS grid bias, 0, capacity)
+limit % = target / capacity × 100
+```
+
+`solar + grid` is the house load from the energy balance, so the formula is really
+**`PV allowed = house load + offer − bias`** — feed forward, with **no measured export in it**.
+That is what stops an ESS ramp, a load switching off or a lagging meter from ratcheting the array
+down, and `push` is clamped at ≥ 0 so a latched-down estimate can never ask for less than the
+battery already takes.
+
+`sensor.ems_mode` is the state machine everything keys off:
+
+| Mode | When | Effect |
+| :--- | :--- | :--- |
+| `FULL` | everything fresh | the formula above |
+| `NIGHT` | sun down and < 200 W PV | nothing is written (the loop still learns) |
+| `STARTING` | less than `EMS start grace` (120 s) since a start | nothing is written |
+| `NO_BATTERY` | no usable battery data | pure zero export — the charge push is dropped |
+| `GRID_BLIND` | no usable grid or solar reading | the fail-safe percentage |
+| `DTU_BLIND` | no inverter limit entity readable | nothing is written, you are notified |
+| `OFF` | `EMS enabled` off, or a manual override | `EMS manual limit` is written |
+
+**The day-start open phase (1.10.0).** At sunrise the array is deliberately held **wide open
+(100 %)** instead of being trimmed to "house load + charge need" (about 53 % with the reference
+installation), so the pack charges as fast as the sun allows. It is released — in the same render,
+so it can never lag a write — as soon as the battery charges at its calculated maximum, PV reaches
+`EMS open until solar` (3500 W), a *lasting* export appears (the loop's export counter, not a
+momentary reading), or the SoC stop is reached. `automation.opendtu_ems_day_start` arms it at
+sunrise (and when the mode leaves `NIGHT` / `STARTING`); the control loop clears the latch, so it
+cannot re-enter until the next morning. Set `EMS open until solar` = 0 to switch the phase off.
+
+The whole reasoning — the mode ladder, the loop's steps, the write gate, capacity redistribution,
+the watchdog and the charge-acceptance learning with the 1.9.0 ramp guard — is in the wiki:
+**[How it works](https://github.com/acdcnow/opendtu-ems/wiki/How-It-Works)** ·
+**[Charge allowance](https://github.com/acdcnow/opendtu-ems/wiki/Charge-Allowance)**.
+
+## The fail-safe ladder
+
+| Situation | Reaction |
+| :--- | :--- |
+| battery data gone or stale | `NO_BATTERY` → zero export (pure house load), no charge push |
+| primary grid meter dead/frozen | the backup takes over, the mode **stays** `FULL`, `source` says `victron` |
+| both meters gone | `GRID_BLIND` → `EMS fail-safe limit` (0 % = inverters off) — export impossible |
+| no inverter reachable | `DTU_BLIND` → nothing is written, notification, no error spam |
+| loop stopped writing | `automation.opendtu_ems_watchdog` writes the fail-safe limit after 300 s and notifies |
+| one inverter offline | excluded from the capacity, its share is redistributed to the rest |
+| one inverter reachable but idle | `PV under-delivering` after ~6 min, while the grid still imports |
+| not enough capacity | the array runs at 100 %, the grid imports the rest, `PV capacity short` |
+
+`binary_sensor.ems_degraded` is on **only** in the fail-safe modes (`DTU_BLIND`, `GRID_BLIND`,
+`NO_BATTERY`). `NIGHT`, `STARTING` and `OFF` are normal and stay silent.
 
 ## Settings: what every value does
 
-The loop is tuned by 18 helpers (Settings → Devices & services → **Helpers**, search *EMS*),
-plus 5 switches and 2 date/times. This is the whole configuration surface: apart from the entity
-ids in section 1 of the package nothing else has to be edited by hand.
+Find them under Settings → Devices & services → **Helpers** (or on the *EMS Expert* board while
+`input_boolean.ems_expert_mode` is on). `script.ems_set_defaults` writes exactly these values —
+run it to reset the tuning.
 
-Nothing in the tables below is compulsory: the values shown are what the reference installation
-runs on, and every scenario in the test suite is checked against them. Raise or lower one value at
-a time and watch `sensor.ems_limit_target` (attributes `allowance` and `charge_push`) plus
-`sensor.ems_grid_power`.
+### Charge power — how much of the array may run
 
-### How the number is calculated
+| Helper | Default | Meaning |
+| :--- | ---: | :--- |
+| `input_number.ems_max_charge_power` | 2500 W | **hard ceiling** and the fallback. Set it to `min(DVCC max charge current, BMS CCL) × pack voltage`. 0 = never charge from PV |
+| `input_number.ems_max_charge_current` | 50 A | `min(DVCC, BMS CCL)`; the offer follows the pack voltage (`voltage × current`, capped at the ceiling) |
+| `input_number.ems_charge_allowance` | 2500 W | the **learned** acceptance — the loop lowers it when a lasting export proves the battery cannot take the offer, resets it on a discharge and probes upwards when the grid is quiet |
+| `input_number.ems_open_solar_w` | 3500 W | **day start:** the array stays fully open below this PV power. 0 = no open phase |
+| `input_number.ems_soc_stop` | 100 % | stop the charge offer at/above this SoC — only while the battery really takes nothing, so a wrong SoC cannot cut the array. 100 = never |
 
-```
-charge power = battery voltage x SIGNED battery current   (Victron DC bus, >0 = charging)
-charge limit = min(battery voltage x EMS max charge current, EMS max charge power)
-allowance    = min(charge limit, EMS charge allowance)
-house load   = solar + grid - charge power                (measured, no load sensor needed)
-target W     = house load + max(allowance, charge power) - EMS grid bias
-limit %      = target W / reachable inverter capacity x 100
-```
+### Grid, meters and fail-safe
 
-The charge power is taken from the **Victron DC bus** (`DC bus voltage × battery current`)
-whenever those two sensors are readable, and from the Seplos BMS power otherwise. A **negative**
-current means the battery is discharging — that is not a charge limit and never curtails the
-array. The charge *limit* follows the pack voltage the same way, so it stays
-`min(DVCC amps, BMS CCL) × voltage` instead of a fixed watt value.
+| Helper | Default | Meaning |
+| :--- | ---: | :--- |
+| `input_number.ems_grid_bias` | 20 W | the grid **import** the loop aims at (subtracted from the target). Raising it lets the array produce less |
+| `input_number.ems_meter_tolerance` | 100 W | allowed disagreement between the two meters; the more conservative value wins |
+| `input_number.ems_failsafe_pct` | 0 % | written in `GRID_BLIND` and by the watchdog. Raise to 2 % if your inverters dislike 0 % |
+| `input_number.ems_manual_pct` | 0 % | the limit written while `EMS automatic mode` is off |
+| `input_number.ems_start_grace` | 120 s | nothing is written for this long after a Home Assistant start |
 
-Three consequences worth internalising:
+### Charge-acceptance learning
 
-* the array is **never** allowed to produce more than `house load + allowance - bias`, no matter
-  how much sun there is — everything above that is curtailed. That is the zero-export promise,
-  not a fault;
-* if the battery takes **more** than the allowance (DVCC opened up, or the allowance was learned
-  down earlier), the array follows the battery: `max(allowance, battery power)`;
-* if the battery **discharges**, the discharge counts as load, so the array covers it too.
+| Helper | Default | Meaning |
+| :--- | ---: | :--- |
+| `input_number.ems_export_tolerance` | 150 W | an export up to this size is noise; nothing is curtailed inside it |
+| `input_number.ems_export_grace` | 60 s | how long an export must last (with the charge power **no longer rising**) before it counts as proof |
+| `input_number.ems_reprobe_seconds` | 900 s | no export for this long → probe the allowance upwards (×1.5). Raise to 3600 s for a quieter grid |
+
+### Reaction speed
+
+| Helper | Default | Meaning |
+| :--- | ---: | :--- |
+| `input_number.ems_settle_seconds` | 12 s | wait after each write for the ESS ramp. **Keep it below 15 s**, otherwise corrections wait for the heartbeat |
+| `input_number.ems_max_step_pct` | 10 % | maximum **increase** per write (decreases are immediate — less PV can never cause an export) |
+| `input_number.ems_hysteresis_pct` | 2 % | minimum change worth a write |
 
 ### Switches
 
-| Helper | Default | What it does | If you change it |
-|---|---|---|---|
-| `input_boolean.ems_enabled` | on | Master switch. | **off**: the mode becomes `OFF` and nothing is written at all, neither limits nor fail-safe writes. The inverters keep their last limit until the DTU or the inverter reboots, then fall back to their persistent limit. |
-| `input_boolean.ems_automatic` | on | Automatic mode. | **off**: manual override — `EMS manual limit` is written to all inverters, every sensor is ignored, the charge-allowance learning is frozen and the watchdog stands down. The manual value is ignored while this switch is on. |
-| `input_boolean.ems_simulate_battery_loss` | off | Test switch for the fail-safe path: while it is on, the mode is forced to `NO_BATTERY`. | **on**: the array drops to `house load - bias`. Use it to prove that the loop degrades instead of exporting. |
-| `input_boolean.ems_verbose` | off | Writes one debug line per run (mode, grid with its source, solar, SoC, battery, inverters, capacity, written limit). | **on**: add the `logger` entry from [docs/INSTALL.md](docs/INSTALL.md) to see it. Turn it off again afterwards — it is one line per 15 s. |
-| `input_boolean.ems_expert_mode` | off | Dashboard switch only — the control loop never reads it. | **on**: the *EMS Expert* view (`dashboards/ems-expert.yaml`) reveals the card with every adjustable parameter. The helpers are always reachable under Settings → Devices & services → Helpers, switch or not. |
-
-#### Manual override in detail
-
-`EMS automatic mode` **off** replaces the entire control law with one fixed number:
-
-* the value of `EMS manual limit` is written to **all** inverters on every loop run —
-  hysteresis, settle time and the 180 s re-assert are bypassed;
-* **every** sensor is ignored, including the fail-safe ladder: with the switch off the mode
-  still *reports* `GRID_BLIND` / `NO_BATTERY` / `DTU_BLIND`, but the written value stays the
-  manual percentage. That is deliberate — you asked for manual control;
-* the charge-allowance learning is frozen (`EMS charge allowance` keeps its last value);
-* the watchdog stands down, so no *fail-safe active* notification is raised while you work;
-* `0` switches the inverters off (handy for maintenance), `100` pins them to full power.
-
-The value is clamped to `0…100` in the template. Switch `EMS automatic mode` back **on** to hand
-control to the loop — the next run re-reads every sensor and resumes regulation within one cycle.
-
-### The charge power: how much of the array may run
-
-| Helper | Range (step) | Default | What it does | If you change it |
-|---|---|---|---|---|
-| `input_number.ems_max_charge_power` | 0…6000 (100) | 2500 W | The **ceiling** for the charge power, and the fallback when the battery voltage sensor is missing. The loop really offers `battery voltage × EMS max charge current`, capped at this value. Together with the house load this decides how much PV is used at all. | **Higher**: the array may produce more, so less sun is thrown away — but only the battery and the BMS decide whether it is really taken, and the allowance learning cuts it back if not. **Lower**: more curtailment. **0**: the loop never asks for charge power (zero export only). |
-| `input_number.ems_max_charge_current` | 0…200 (1) | 50 A | The **charge current limit**: `min(DVCC max charge current, BMS CCL)`. The dynamic charge power limit is `battery voltage × this`. | **Higher**: a higher charge limit, up to `EMS max charge power`. **Lower**: fewer watts go to the battery, the array is curtailed earlier. **0**: fall back to the static `EMS max charge power`. |
-| `input_number.ems_charge_allowance` | 0…6000 (50) | 2500 W | **Written by the loop.** The charge power the battery has been *observed* to accept. The effective offer is `min(charge limit, this)`; the loop cuts it when a lasting export proves the battery cannot use the offer — **but only once the charge power has stopped climbing**, so an ESS ramp can no longer be mistaken for a refusal. It is reset whenever the battery discharges and probed upwards when the grid has been quiet. | You can set it by hand to cap charging without touching the maximum, but it is the *second* cap: the smaller of the two always wins. If it sits permanently below the maximum, the battery or the BMS is the bottleneck (CV phase, cold pack, CCL), not the EMS. |
-| `input_number.ems_bat_prev` | -6000…6000 (1) | 0 W | Internal. The **baseline of the current export episode**: while the battery keeps taking measurably more (> 50 W) it follows the battery up and the export grace restarts. That is what stops a still-ramping ESS from being read as "the battery refuses the offer". | Do not edit: a manual change only re-arms or silences the cut for one episode. |
-| `input_number.ems_soc_stop` | 80…100 (1) | 100 % | At or above this SoC the charge push is dropped and the array covers the house load only. It counts **only while the battery is measurably not charging** (`battery power < EMS export tolerance`), so a stuck or badly calibrated SoC can never cut the array. | **Lower** (e.g. 95): stop *asking* for charge earlier, but only once the battery has actually stopped taking current. `100`: never stop, the BMS and the ESS decide. |
-| `input_number.ems_export_tolerance` | 0…1000 (10) | 150 W | An export up to this many watts is ignored: meter noise, the Victron ramp and the upward probe all live in this band. | **Higher**: more patience, fewer allowance cuts, but the grid may export that much for a while. **Never 0**: at 0 every watt of export counts as proof. |
-| `input_number.ems_export_grace` | 0…600 (15) | 60 s | How long an export may last (counted in 15 s loop runs) before it counts as proof that the battery cannot use the offer. | **Higher** (120…180 s) if your ESS or BMS reacts slowly. **Lower**: reacts faster, but cuts on a short ramp that would have passed. |
-| `input_number.ems_export_ticks` | 0…99 (1) | 0 | Internal counter of consecutive exporting runs. `0` = quiet; at or above the grace in ticks the allowance is being cut. | Do not edit: a manual change only re-arms or silences the cut. |
-| `input_number.ems_reprobe_seconds` | 60…3600 (60) | 900 s | How long the grid has to stay quiet before the allowance is probed upwards again (×1.5, at least +100 W). | **Higher**: a quieter grid, but a battery that freed up is charged at full power later. **Lower**: faster recovery, more small refused probes. |
-
-### The grid, the meters and the fail-safe
-
-| Helper | Range (step) | Default | What it does | If you change it |
-|---|---|---|---|---|
-| `input_number.ems_grid_bias` | 0…200 (5) | 20 W | The grid target. It is *subtracted* from the target, so the loop aims at this much grid **import** while the array produces that much less. | **Higher**: more safety margin against export if your meter is noisy or has a small offset, at the cost of buying those watts. `0`: the loop sits exactly on the boundary between import and export, where it is most likely to keep switching. |
-| `input_number.ems_meter_tolerance` | 0…1000 (10) | 100 W | Allowed difference between the primary (Shelly) and the backup (Victron) meter. Beyond it the **smaller** value (the one showing more export) is used and `source` becomes `disagree`. | **Higher**: more tolerance for small permanent offsets, fewer `disagree` states. **Lower** (or 0): the source flips to `disagree` for the slightest difference — the loop still uses the more conservative value, and `grid_fallback` on `binary_sensor.ems_degraded` shows it. |
-| `input_number.ems_failsafe_pct` | 0…100 (1) | 0 % | Written in `GRID_BLIND` (no usable grid or solar reading) and by the watchdog when the loop stopped writing. | `0`: inverters stopped, export impossible. Raise to 2 % only if your inverters oscillate at 0 %. Higher: the fail-safe itself can export. |
-
-### Reaction speed and writes
-
-| Helper | Range (step) | Default | What it does | If you change it |
-|---|---|---|---|---|
-| `input_number.ems_hysteresis_pct` | 0…10 (0.5) | 2 % | Minimum change of the limit before a write happens. | **Higher**: fewer writes, coarser regulation. **Lower** (or 0): the loop chases every small deviation and writes much more often. |
-| `input_number.ems_settle_seconds` | 0…120 (1) | 12 s | After every write the loop waits this long before it acts again, so it does not chase a Victron that is still ramping. Must stay **below 15 s** (the heartbeat), otherwise corrections only happen on the next heartbeat. | **Higher**: calmer, but corrections are slower. **Lower**: more responsive, more writes. An export above 500 W always bypasses it. |
-| `input_number.ems_max_step_pct` | 1…100 (1) | 10 % | Maximum **increase** per write, in percent of the reachable capacity. Decreases are always applied immediately. | **Higher**: the limit reaches its target faster after a load step, with bigger export transients while the ESS catches up. **Lower** (5 %): gentler, slower to converge. |
-| `input_number.ems_start_grace` | 0…900 (10) | 120 s | After every Home Assistant start the mode is `STARTING` for this long: nothing is written until the sensors and the ESS are up. | **Higher** if your Victron needs longer than two minutes to come up. `0` removes the protection. |
-| `input_number.ems_manual_pct` | 0…100 (1) | 0 | The percentage written to all inverters while `EMS automatic mode` is **off**; ignored while it is on. | **0**: the inverters are switched off, but the loop keeps running and the watchdog stands down. Handy for maintenance — remember to switch `EMS automatic mode` back on afterwards. |
-
-### Diagnostics, not tuning
-
-| Helper | Default | What it does | If you change it |
-|---|---|---|---|
-| `input_number.ems_delivery_short` | 0 | Counter of consecutive watchdog runs in which the inverters deliver much less than commanded. The *PV under-delivering* notification is raised exactly at 3. | Do not edit: a manual change only silences or triggers the notification. |
-| `input_datetime.ems_last_apply` | – | Heartbeat, written before every inverter write. Drives the 180 s re-assert and the 300 s watchdog. | Clearing it makes the watchdog think the loop just started. |
-| `input_datetime.ems_started_at` | – | Written by the boot automation at every start; drives `STARTING`. Having no value yet is what marks the very first start after the installation. | Clearing it makes the next start apply the documented defaults again. |
-
-### Worked example: 3700 W of array, 738 W house, 2500 W of charge power
-
-Reference fleet (1500 + 1600 + 1600 = 4700 W) with the defaults of the tables above:
-
-```
-allowance = min(2500, 2500)  = 2500 W
-target    = 738 + 2500 - 20  = 3218 W  = 68.5 % of 4700 W
-```
-
-| The battery takes | Limit written | Array produces | Grid | What happens |
-|---|---|---|---|---|
-| 2500 W (the whole offer) | 3218 W, 68.5 % | 3218 of 3700 W | **+20 W import** | 482 W of sun are curtailed, because the battery cannot take more |
-| 1500 W (less than offered) | 3218 W, 68.5 % | 3218 W | **-980 W export** | after `EMS export grace` the allowance is cut to `max(1500, 1250) = 1500 W` |
-| 1500 W (after the learning) | 2218 W, 47.2 % | 2218 W | +20 W import | export gone, 1482 W curtailed |
-
-To use the **whole** array in that situation the offer has to reach
-`3700 - 738 + 20 = 2982 W`, so both `EMS max charge power` **and** the learned
-`EMS charge allowance` must be at least that: set it to `3000` and make sure DVCC allows about
-57 A at 52 V. With a 50 A DVCC (about 2600 W) you cannot use 3700 W while the house only takes
-738 W — either curtailing or exporting is unavoidable, and this package always chooses
-curtailment. For the full 4700 W fleet the offer would have to be `4700 - 738 + 20 = 3982 W`
-(about 76 A).
-
-The SoC is not part of that arithmetic at all: below `EMS SoC stop charging` it has no influence
-on the limit, and at or above it the stop only takes effect once the battery has measurably
-stopped charging.
+| Helper | Default | Meaning |
+| :--- | :--- | :--- |
+| `input_boolean.ems_enabled` | on | master switch; off means `OFF` and nothing is written |
+| `input_boolean.ems_automatic` | on | off = manual override: `EMS manual limit` is written, sensors are ignored, the learning freezes, the watchdog stands down |
+| `input_boolean.ems_expert_mode` | off | dashboard only: reveals the tuning cards on *EMS Expert* |
+| `input_boolean.ems_verbose` | off | one `opendtu.zero_export` log line per loop run |
+| `input_boolean.ems_simulate_battery_loss` | off | test switch: forces `NO_BATTERY` so you can watch the fallback |
 
 ### Why the helpers start empty
 
-The 18 tuning numbers have **no `initial` value**. Home Assistant creates an `input_number`
-without `initial` at its *minimum* and only restores a value that already exists. A helper that
-was just created has neither, so it starts at its minimum: `EMS max charge power` 0 W,
-`EMS charge allowance` 0 W, `EMS grid bias` 0 W, `EMS start grace` 0 s, `EMS max step` 1 %. In
-that state the array only ever covers the house load, which looks exactly like "the sun is cut
-although the battery could take it".
+Home Assistant creates an `input_number` **without** an `initial` value at its **minimum** — a
+fresh installation would run with 0 W of charge power and never charge from PV. The boot automation
+therefore applies the defaults **once**, on the very first start. `initial` would be wrong: it
+would also overwrite your tuning and the learned allowance on every restart.
 
-Adding `initial` would **not** be the fix: it also overrides the restore, so it would reset your
-tuning and the learned charge allowance on *every* Home Assistant restart. Instead:
-
-1. on the **first start** after the installation, `automation.opendtu_ems_boot` sees that
-   `input_datetime.ems_started_at` has never been written and runs `script.ems_set_defaults`,
-   which writes every value in the tables above;
-2. later restarts never touch the helpers again, so your tuning and the learned allowance
-   survive;
-3. an installation that is older and was never set by hand is reported by a *no charge power
-   configured* notification while `EMS max charge power` is 0 W and the sun is up;
-4. `script.ems_set_defaults` can be run at any time (Developer tools → Actions) to put the whole
-   helper set back to the documented defaults.
+Every entity, with its meaning and its attributes, is listed in the wiki:
+**[Reference](https://github.com/acdcnow/opendtu-ems/wiki/Reference)**.
 
 ## Day-to-day use
 
-After the installation there is nothing to do — the loop runs by itself. The entities worth
-knowing:
+* **Two dashboards** come with it: *EMS Overview* (power flow, status chips, the day's history)
+  and *EMS Expert* (the live control law, the learning, the inverter checks and the tuning cards).
+  See [DASHBOARD.md](docs/DASHBOARD.md).
+* **Normally you change nothing.** The loop regulates, learns and recovers by itself; the fail-safe
+  ladder handles missing sensors.
+* **Three things worth a look** when you want to know what is happening:
+  `sensor.ems_limit_target` (the value written, with `allowance`, `charge_push` and `open_phase`),
+  `sensor.ems_grid_power` (with its `source` attribute) and `input_number.ems_charge_allowance`.
+* **`input_boolean.ems_automatic` off** is the emergency brake: the limit you set in
+  `EMS manual limit` is written and nothing else is touched.
+* **Updating** never loses the mapping or the learned values; see [Install](#install).
 
-| I want to… | Use |
-|---|---|
-| pause everything immediately | `input_boolean.ems_enabled` → off (no writes at all) |
-| test the "battery data lost" path | `input_boolean.ems_simulate_battery_loss` → on |
-| write a fixed limit by hand | `input_boolean.ems_automatic` → off, then `input_number.ems_manual_pct` → 0…100 |
-| hand control back to the loop | `input_boolean.ems_automatic` → on |
-| put every tuning value back to the documented default | run the action `script.ems_set_defaults` |
-| reveal the expert dashboard cards | `input_boolean.ems_expert_mode` → on |
-| see what the loop is doing | `sensor.ems_mode`, `sensor.ems_limit_target`, `sensor.ems_pv_delivery` |
-| see how much charge power the battery is offered | attribute `allowance` of `sensor.ems_limit_target`, `input_number.ems_charge_allowance` |
-| see how much charge power the array is asked for | attribute `charge_push` of `sensor.ems_limit_target` |
-| see how much the battery is really taking | `sensor.ems_battery_charge_power` |
-| see which meter is used | attribute `source` of `sensor.ems_grid_power` |
-| see how many inverters answer | attribute `active` of `sensor.ems_inverter_capacity` |
-| see when it last wrote | `input_datetime.ems_last_apply` |
-| get a diagnostic line per run | `input_boolean.ems_verbose` plus the `logger` entry from [docs/INSTALL.md](docs/INSTALL.md) |
-| check why it did nothing | Settings → Automations → *OpenDTU EMS loop* → ⋮ → Traces |
+## Tests
 
-Healthy readings while the sun is up: mode `FULL`, `source` = `shelly`, `active` = 3,
-`EMS PV delivery` near 100 %, `input_number.ems_export_ticks` at 0,
-`input_number.ems_charge_allowance` at your `EMS max charge power`,
-`sensor.ems_grid_power` a few watts **positive**, and `input_datetime.ems_last_apply` never
-older than 3 minutes.
+Five suites, all runnable locally without a Home Assistant installation (the last one needs one):
 
-If `EMS charge allowance` sits permanently below `EMS max charge power`, the battery is the
-bottleneck (BMS current limit, temperature, CV phase) — that is a battery/BMS matter, not an EMS
-one. If `EMS export ticks` keeps climbing, the accepted charge power is being cut further every
-`EMS export grace`; raise `EMS export tolerance` (meter noise) or `EMS export grace` (give the
-Victron more time) if the underlying cause is a ramp rather than the battery.
+| Command | What it proves |
+| :--- | :--- |
+| `python tests/validate_package.py` | every template parses and renders, the frozen control scenarios, the charge-allowance learning, the day-start open phase, the docs |
+| `python tests/validate_dashboards.py` | every card template renders against a simulated sensor chain — including the ids a card builds *inside* its Jinja |
+| `python tests/validate_integration.py` | the bundle is byte-identical to the sources, the manifest and `hacs.json` are valid, the install rules behave |
+| `python tests/simulate_day.py` | a whole day at 10 s resolution (a `day` and a `cloud` scenario) against the real templates: no curtailment while the battery could take it, curtailment at its limit, and the day-start phase |
+| `python tests/validate_in_ha.py` | boots a **real** Home Assistant, loads the package and drives the chain — platforms set up, no invalid config, every dashboard entity exists, the write path, the open phase |
 
-Two modes are normal and not a fault: `NIGHT` (sun down — the inverters are asleep) and
-`STARTING` (up to `input_number.ems_start_grace`, default 120 s, after every Home Assistant
-start nothing is written until the sensors and the ESS are up). Both end by themselves.
+The last one is the important one: an invalid config key does **not** raise, it silently drops a
+whole platform with a single log line, and a dashboard wired to a non-existent entity renders
+nothing and logs nothing. CI runs the first four on every push; the fifth needs
+`pip install homeassistant==2026.10.1` and also asserts that the running Home Assistant satisfies
+the minimum declared in `hacs.json`.
 
-When something is off the system reports it itself: `binary_sensor.ems_degraded` turns on and one
-of the notifications appears (*no inverter reachable*, *PV capacity short*, *PV under-delivering*,
-*fail-safe active*).
+## Files
 
-## Why the relative limits
-
-`limit_nonpersistent_relative` is a percentage of each inverter's own rating, so one single value
-drives a mixed fleet correctly — for example a 1500 W HM and two 1600 W HMS:
-
-* no wrong `target / 3` arithmetic
-* a 1500 W unit never receives a value above its rating
-* no absolute value below the stable minimum (roughly `inputs × 12 W`)
-* updates are reported immediately, whereas `limit_nonpersistent_absolute` may take up to
-  four minutes to show up (OpenDTU documentation)
+```
+packages/opendtu_ems.yaml                     the EMS - helpers, sensors, scripts, automations
+dashboards/ems-overview.yaml                  everyday board
+dashboards/ems-expert.yaml                    diagnostics, tuning, maintenance
+blueprints/script/opendtu_ems/ems_map_sensors.yaml   the mapping blueprint
+custom_components/opendtu_ems/                the HACS integration that installs the four files
+tests/                                        the five suites above
+docs/                                         INSTALL, CONFIGURATION, DASHBOARD, TROUBLESHOOTING
+```
 
 ## Hardware backstop
 
-Software cannot protect you from a dead DTU or a rebooted inverter. Set a **low persistent limit**
-on every inverter in the OpenDTU web UI: that is the value an inverter falls back to whenever no
-non-persistent limit is in force.
-
-Known issue: Hoymiles firmware **2.0.4** reports 100 % after ~4 minutes without a limit update.
-Avoid that version — 1.1.12 is the recommended one. The 180 s re-assert in the control loop
-exists for exactly this failure mode.
-
-## Alternatives
-
-If your DTU has enough flash (8 MB or more, or a board you are willing to re-flash once),
-[OpenDTU-OnBattery](https://github.com/hoylabs/OpenDTU-OnBattery) implements the same idea in
-firmware as the *Dynamic Power Limiter*: target grid consumption, base load when the meter fails,
-SoC/voltage thresholds, per-inverter min/max and hysteresis — and it keeps running when Home
-Assistant is down. Note that the DPL expects **exclusive control** of the governed inverters, so
-never run it next to this package.
+Everything above is software that has to be *running*. Set a **low persistent limit** on every
+inverter in the OpenDTU web UI (Inverter → Limit): that is what the inverter falls back to when no
+non-persistent limit is in force — after a reboot, when the DTU is offline, or when the limit
+expires. Without it, "no export" depends on Home Assistant being up.
 
 ## Documentation
 
-**Wiki — what it does and how** ([index](https://github.com/acdcnow/opendtu-ems/wiki)):
-
-* [What it does and how it works](https://github.com/acdcnow/opendtu-ems/wiki/How-It-Works) — the control law, the learning, the fail-safe ladder and the entities in one page
-* [Architecture Concept Document (ACD)](https://github.com/acdcnow/opendtu-ems/wiki/Architecture-Concept-Document) — goals, system context, concepts C1–C6, decisions AD-1…AD-12, risks and roadmap
-* [Software Design Document (SDD)](https://github.com/acdcnow/opendtu-ems/wiki/Software-Design-Document) — entity inventory, exact formulas, learning algorithm, invariants, sequences, test design, traceability
-* [Workflow Diagrams](https://github.com/acdcnow/opendtu-ems/wiki/Workflow-Diagrams) — the GitDiagram repository map plus mode ladder, arbitration, control cycle, startup and fault flows
-* [Changelog archive](https://github.com/acdcnow/opendtu-ems/wiki/Changelog-Archive) — the release notes of 1.8.0 and older
-
-**In this repository:**
-
-* [docs/INSTALL.md](docs/INSTALL.md) — step by step: prerequisites, install, verification, fail-safe tests
-* [docs/DASHBOARD.md](docs/DASHBOARD.md) — the Lovelace views, the HACS cards used and how to adapt them
-* [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — every helper, tuning guide, dashboard entities
-* [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — symptoms, causes, fixes
-* [CHANGELOG.md](CHANGELOG.md) — the current release line
+* **Wiki** — [What it does and how it works](https://github.com/acdcnow/opendtu-ems/wiki/How-It-Works) ·
+  [The charge-allowance learning](https://github.com/acdcnow/opendtu-ems/wiki/Charge-Allowance) ·
+  [The sensor mapping](https://github.com/acdcnow/opendtu-ems/wiki/Sensor-Mapping) ·
+  [Installation](https://github.com/acdcnow/opendtu-ems/wiki/Installation) ·
+  [Dashboards](https://github.com/acdcnow/opendtu-ems/wiki/Dashboards) ·
+  [Reference](https://github.com/acdcnow/opendtu-ems/wiki/Reference) ·
+  [Troubleshooting](https://github.com/acdcnow/opendtu-ems/wiki/Troubleshooting) ·
+  [Upgrading](https://github.com/acdcnow/opendtu-ems/wiki/Upgrading)
+* [docs/INSTALL.md](docs/INSTALL.md) · [docs/CONFIGURATION.md](docs/CONFIGURATION.md) ·
+  [docs/DASHBOARD.md](docs/DASHBOARD.md) · [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+* [CHANGELOG.md](CHANGELOG.md) · [Releases](https://github.com/acdcnow/opendtu-ems/releases)
 
 ## Safety and disclaimer
 
-This package controls real hardware and switches power. Keep a low persistent limit as a
-hardware backstop and test the fail-safe paths before trusting the system. Nobody but you is
-responsible for your installation, your cabling ratings and your grid connection rules.
+This package writes to your inverters. It is built to fail *safe* (a wrong sensor leads to less
+PV, never to more), but **you are responsible for your installation**: keep the persistent limit
+in OpenDTU as a backstop, check the grid meter sign and the battery power sign before you trust
+the regulation, and watch the first sunny day.
 
 ## License
 
-**GNU General Public License v3.0** — the full text is in [LICENSE](LICENSE).
-
-The licence covers the package, the integration and the dashboards. It is a copyleft licence:
-if you redistribute a modified version, it has to stay under the GPL-3.0.
-
-> Earlier revisions of this README and of `info.md` said *MIT*, which never matched the licence
-> file the repository ships. The statement was corrected on 2026-10-11; `LICENSE` has always
-> been GPL-3.0.
+GPL-3.0 — see [LICENSE](LICENSE).

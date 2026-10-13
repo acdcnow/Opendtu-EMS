@@ -182,6 +182,8 @@ def bundle_checks() -> None:
         (ROOT / "packages" / "opendtu_ems.yaml", INTEGRATION / "bundle" / "opendtu_ems.yaml"),
         (ROOT / "dashboards" / "ems-overview.yaml", INTEGRATION / "bundle" / "ems-overview.yaml"),
         (ROOT / "dashboards" / "ems-expert.yaml", INTEGRATION / "bundle" / "ems-expert.yaml"),
+        (ROOT / "blueprints" / "script" / "opendtu_ems" / "ems_map_sensors.yaml",
+         INTEGRATION / "bundle" / "ems_map_sensors.yaml"),
     ):
         same = source.read_bytes() == bundled.read_bytes()
         check(same, f"{bundled.name} matches {source.relative_to(ROOT)}")

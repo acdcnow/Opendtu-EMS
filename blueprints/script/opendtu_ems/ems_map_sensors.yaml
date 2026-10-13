@@ -1,0 +1,255 @@
+# =============================================================================
+#  OpenDTU EMS  -  script blueprint:  "the sensor names"
+#  version 1.10.0  ·  2026-10-13  ·  see CHANGELOG.md
+# -----------------------------------------------------------------------------
+#  Section 1 of packages/opendtu_ems.yaml no longer contains entity ids. It
+#  contains 15 input_text helpers ("the mapping") and every template, trigger,
+#  script and dashboard reads the ids from there. This blueprint is the
+#  comfortable way to fill them: it asks for each sensor with a picker and
+#  writes the ids into the helpers.
+#
+#  INSTALL
+#    * HACS: the integration puts this file into
+#      <config>/blueprints/script/opendtu_ems/ - nothing to do.
+#    * otherwise: copy it there, then
+#      Settings > Automations & scenes > Blueprints > Reload blueprints.
+#
+#  USE  (once, and again after renaming a sensor)
+#    1. Settings > Automations & scenes > Blueprints
+#    2. "OpenDTU EMS - the sensor names"  ->  Create script
+#    3. fill the fields (the 7 required ones first)  ->  Save
+#    4. RUN the created script once
+#       (Settings > Automations & scenes > Scripts > ... > Run)
+#    5. sensor.ems_map_status must read "ok".  It lists every entry that is
+#       still empty, in its required_missing / optional_empty attributes.
+#
+#  The seven REQUIRED entries are the ones the control law cannot work without.
+#  The seven optional ones only improve the diagnostic and the dashboards:
+#      grid_backup     a second grid meter on the same metering point (the loop
+#                      keeps regulating if the primary dies)
+#      batt_voltage    + batt_current: charge power as voltage x current
+#                      (dynamic, follows the pack voltage)
+#      inv1/2/3_power  the per-inverter AC power, shown in the PV chip
+#      victron_state   the Victron charge stage, shown next to the EMS mode
+#  Leaving an optional field empty CLEARS that mapping entry - the package
+#  degrades gracefully (single meter, Seplos power instead of voltage x current,
+#  dashboard chip shows "3 inputs").
+#
+#  A wrong id is not silent: an unmapped or missing SENSOR shows up as
+#  GRID_BLIND / NO_BATTERY in sensor.ems_mode and turns
+#  binary_sensor.ems_degraded on. A wrong NUMBER entity only shows up as
+#  "PV capacity short" (the EMS then cannot control that inverter).
+# =============================================================================
+blueprint:
+  name: "OpenDTU EMS - the sensor names"
+  description: >-
+    Writes the entity ids the OpenDTU EMS reads into its mapping helpers
+    (input_text.ems_src_*), so neither the package nor the dashboards contain a
+    foreign entity id any more. Run it once after installing or updating the
+    package, and again whenever a sensor is renamed. Check
+    sensor.ems_map_status afterwards.
+  domain: script
+  source_url: >-
+    https://github.com/acdcnow/Opendtu-EMS/blob/main/blueprints/script/opendtu_ems/ems_map_sensors.yaml
+  input:
+    grid:
+      name: Grid meter - primary  (required)
+      description: >-
+        The grid meter of the metering point. Positive = import from the grid.
+        Without it the loop cannot compute anything (mode stays GRID_BLIND).
+      selector:
+        entity:
+          domain: sensor
+    solar:
+      name: PV power - all inverters summed  (required)
+      description: >-
+        Total AC power of the micro inverters, as OpenDTU publishes it.
+      selector:
+        entity:
+          domain: sensor
+    batt_soc:
+      name: Battery state of charge  (required)
+      selector:
+        entity:
+          domain: sensor
+    batt_power:
+      name: Battery power - SIGNED, positive = charging  (required)
+      description: >-
+        The BMS power sensor. Positive must mean CHARGING. If yours is the other
+        way round the whole calculation is wrong - use a template sensor that
+        negates it.
+      selector:
+        entity:
+          domain: sensor
+    inv1_limit:
+      name: Inverter 1 - the relative limit number  (required)
+      description: >-
+        The number.*_limit_nonpersistent_relative entity of the first inverter.
+        Percent, not watts - one value then drives a mixed fleet correctly.
+      selector:
+        entity:
+          domain: number
+    inv2_limit:
+      name: Inverter 2 - the relative limit number  (required)
+      selector:
+        entity:
+          domain: number
+    inv3_limit:
+      name: Inverter 3 - the relative limit number  (required)
+      selector:
+        entity:
+          domain: number
+    grid_backup:
+      name: Grid meter - backup  (optional, paste the entity id or leave empty)
+      description: >-
+        A second meter on the SAME metering point with the same sign, e.g. the
+        Victron smart meter. The loop uses it automatically when the primary
+        dies or freezes; if the two disagree the more conservative value wins.
+      default: ""
+      selector:
+        text:
+    house_load:
+      name: House consumption  (optional, paste the entity id or leave empty)
+      description: >-
+        Your own consumption sensor, if you have one. sensor.ems_house_load
+        prefers it over its own calculation (solar + grid - battery) and the
+        two diagnostic flags use it. Display only - the control law never
+        reads the house load.
+      default: ""
+      selector:
+        text:
+    batt_voltage:
+      name: Battery voltage / DC bus  (optional, paste the entity id or leave empty)
+      description: >-
+        With batt_current this makes the charge power "voltage x current", which
+        follows the pack voltage. Needs a number in V.
+      default: ""
+      selector:
+        text:
+    batt_current:
+      name: Battery current - SIGNED, positive = charging  (optional)
+      description: >-
+        Signed amps, positive = charging. Left empty the Seplos BMS power is
+        used. Needs a number in A.
+      default: ""
+      selector:
+        text:
+    inv1_power:
+      name: Inverter 1 AC power  (optional, dashboard only)
+      description: >-
+        Shown as the secondary information of the PV circle. Leaving all three
+        empty just shows "3 inputs" there.
+      default: ""
+      selector:
+        text:
+    inv2_power:
+      name: Inverter 2 AC power  (optional, dashboard only)
+      default: ""
+      selector:
+        text:
+    inv3_power:
+      name: Inverter 3 AC power  (optional, dashboard only)
+      default: ""
+      selector:
+        text:
+    victron_state:
+      name: Victron charge stage  (optional, dashboard only)
+      description: >-
+        Shown next to the EMS mode, e.g. "Bulk".
+      default: ""
+      selector:
+        text:
+
+mode: single
+
+sequence:
+  # required - the loop cannot regulate without these
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.ems_src_grid
+    data:
+      value: !input grid
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.ems_src_solar
+    data:
+      value: !input solar
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.ems_src_house_load
+    data:
+      value: !input house_load
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.ems_src_batt_soc
+    data:
+      value: !input batt_soc
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.ems_src_batt_power
+    data:
+      value: !input batt_power
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.ems_src_inv1_limit
+    data:
+      value: !input inv1_limit
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.ems_src_inv2_limit
+    data:
+      value: !input inv2_limit
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.ems_src_inv3_limit
+    data:
+      value: !input inv3_limit
+  # optional - an empty field clears the entry again
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.ems_src_grid_backup
+    data:
+      value: !input grid_backup
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.ems_src_batt_voltage
+    data:
+      value: !input batt_voltage
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.ems_src_batt_current
+    data:
+      value: !input batt_current
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.ems_src_inv1_power
+    data:
+      value: !input inv1_power
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.ems_src_inv2_power
+    data:
+      value: !input inv2_power
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.ems_src_inv3_power
+    data:
+      value: !input inv3_power
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.ems_src_victron_state
+    data:
+      value: !input victron_state
+  # the helpers are what the templates read, so nothing has to be reloaded -
+  # but say so, because "the loop does nothing" is the symptom when an entry is
+  # still empty. automation.opendtu_ems_boot replaces this notification at the
+  # next start (and keeps it while an entry is missing).
+  - action: persistent_notification.create
+    data:
+      notification_id: opendtu_ems_mapping
+      title: OpenDTU EMS - sensor mapping written
+      message: >-
+        The mapping helpers were updated from the blueprint. Open
+        sensor.ems_map_status: it must read "ok", and its attributes list every
+        required or optional entry that is still empty. The control loop picks
+        the new ids up on its next run - no restart needed.

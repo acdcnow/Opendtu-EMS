@@ -5,14 +5,15 @@ Work through the symptom table first, then the detail sections.
 | Symptom | Look at | Likely cause |
 |---|---|---|
 | **No `ems_*` entities at all** | `configuration.yaml`, Logs | the package was not loaded — see [below](#the-ems-entities-do-not-appear-at-all) |
+| **The loop does nothing / mode is stuck in `GRID_BLIND` or `NO_BATTERY`** | `sensor.ems_map_status` | the sensor mapping is incomplete — see [below](#the-sensor-mapping-is-not-ok) |
 | **`<Plugin …> Repository structure for vX.Y.Z is not compliant`** in HACS | the HACS custom repository list | the repository was added to HACS, which has no type for packages — see [below](#hacs-repository-structure-is-not-compliant) |
 | `Integration 'ems_enabled' not found` | `packages:` in `configuration.yaml` | the package file is used **as** the packages mapping — see [below](#setup-of-package-input_boolean-failed) |
 | `sensor.ems_mode` is `OFF` | `input_boolean.ems_enabled` | master switch off |
 | `sensor.ems_mode` is `NIGHT` | `sun.sun`, PV | normal at night — not a fault |
 | `sensor.ems_mode` is `STARTING` | `input_datetime.ems_started_at` | normal for `EMS start grace` seconds after a restart |
 | `sensor.ems_mode` is `DTU_BLIND` | `sensor.ems_inverter_capacity` = 0 | OpenDTU off, MQTT down, ids changed |
-| `sensor.ems_mode` is `GRID_BLIND` | `sensor.ems_grid_power` → `source`, `sensor.solarleistung_gesamt` | both meters dead, renamed or stale — or the solar sensor is gone |
-| `sensor.ems_mode` is `NO_BATTERY` | `sensor.serialbattery_seplos_*` | SoC/power sensor unavailable, stale or out of range |
+| `sensor.ems_mode` is `GRID_BLIND` | `sensor.ems_grid_power` → `source`, `sensor.ems_solar_power` | both meters dead, renamed or stale — or the solar sensor is gone |
+| `sensor.ems_mode` is `NO_BATTERY` | `sensor.ems_battery_soc`, `sensor.ems_battery_power` and the mapping entries they point at | SoC/power sensor unavailable, stale or out of range |
 | Limit stays at `0 %` | mode, `input_number.ems_failsafe_pct` | `GRID_BLIND` fail-safe, or automatic mode off with `ems_manual_pct = 0` |
 | Limit never changes | trace of the loop, `input_datetime.ems_last_apply` | condition blocked (settle/hysteresis) or the loop errors |
 | The limit no longer follows the grid | `input_boolean.ems_automatic` | manual override is active (switch off): the loop writes `ems_manual_pct` and ignores every sensor |
@@ -207,10 +208,59 @@ then `NIGHT` until the sun comes up, then `FULL` (or `DTU_BLIND` if the DTU is r
 
 No `number.*_limit_nonpersistent_relative` entity has a value, so the loop cannot control
 anything and stops writing. Typical causes: the ESP32 running OpenDTU is unplugged or
-rebooting, the MQTT broker is down, the DTU has no Wi-Fi, or the entity IDs were renamed
-(section 1 of the package). The grid and battery sensors are unaffected, and the loop resumes
+rebooting, the MQTT broker is down, the DTU has no Wi-Fi, or the inverter-limit entries of the
+**sensor mapping** are empty or renamed (check `sensor.ems_map_status`). The grid and battery
+sensors are unaffected, and the loop resumes
 by itself as soon as one inverter entity is readable again. A persistent notification
 *OpenDTU EMS - no inverter reachable* is raised while it lasts.
+
+---
+
+## The sensor mapping is not `ok`
+
+`packages/opendtu_ems.yaml` contains no foreign entity id: section 1 declares 15 `input_text`
+helpers and everything reads the ids from there. If one of the **required** ones is empty, the
+loop cannot read that sensor at all — and the symptom is always a mode, never an error:
+
+| Missing entry | Symptom |
+|---|---|
+| `input_text.ems_src_grid` (+ backup) | `sensor.ems_grid_power` is `unavailable`, mode `GRID_BLIND`, limit = `EMS fail-safe limit` |
+| `input_text.ems_src_solar` | mode `GRID_BLIND` |
+| `input_text.ems_src_batt_soc` / `batt_power` | mode `NO_BATTERY` (zero export, no charge push) |
+| `input_text.ems_src_inv1_limit` … `input_text.ems_src_inv3_limit` | `sensor.ems_inverter_capacity` = 0, mode `DTU_BLIND`, nothing is written |
+
+**Fix:** open `sensor.ems_map_status` — it reads *"N required source(s) missing"* and its
+`required_missing` / `optional_empty` attributes name the entries. Both dashboards start with a
+card that says the same thing while the mapping is incomplete
+([DASHBOARD.md](DASHBOARD.md#4-fill-the-sensor-mapping)): an empty board is the normal state
+right after an update, not a broken dashboard. Fill the entries with the blueprint:
+(Settings → Automations & scenes → Blueprints → *OpenDTU EMS - the sensor names* → *Create
+script* → run it once) or by hand in Settings → Devices & services → **Helpers**.
+`automation.opendtu_ems_boot` raises a notification at every start until the mapping is
+complete, and dismisses it once it is.
+
+A **wrong** id (not an empty one) is visible as `unavailable` in Developer tools → States: the
+helper holds the id, but no such entity exists. Renaming an entity in Home Assistant does **not**
+change the mapping — that is the point of it, and it is also the one thing to keep in mind when
+you rename something yourself.
+
+---
+
+## Two entities with the same name / a state that keeps flipping
+
+The package declares `binary_sensor.grid_export_throttling_required` and
+`binary_sensor.high_consumption_ac_mode` itself (1.10.0). If you still have your own `template:`
+definitions for them, Home Assistant logs *"entity id … is already in use"* at startup and the
+state you see is whichever definition wrote last. **Delete the hand-made copies** — the
+`unique_id` of `High Consumption AC Mode` was kept on purpose, so its history and any automation
+using it survive the change. Same rule for any sensor the package owns and you also declare:
+the package version wins, and nothing warns you beyond that one log line.
+
+Both flags are informational (no automation of the package reads them), so if one of them is
+wrong or missing it cannot affect the regulation — the control law, the watchdog and the
+fail-safe never look at them. `binary_sensor.grid_export_throttling_required` is the visible
+counterpart of the export the allowance learning acts on; `binary_sensor.high_consumption_ac_mode`
+is a mode flag for your own automations and can be deleted from the package if nothing uses it.
 
 ---
 
@@ -227,7 +277,7 @@ Check in this order:
 3. **Settle time** — if it is above 15 s, corrections only happen on the heartbeat. Keep it
    around 10-12 s.
 4. **Errors** — Settings → Logs, filter for `opendtu.zero_export`. Template errors there mean
-   an entity ID in section 1 of the package is wrong.
+   a mapping entry points at an entity that does not exist (see `sensor.ems_map_status`).
 5. **Availability** — if all three `number.*_limit_nonpersistent_relative` entities are
    unavailable, `sensor.ems_inverter_capacity` is 0 and the loop writes the fail-safe value
    into nothing. Check the DTU/OpenDTU itself.
@@ -248,7 +298,8 @@ Check in this order:
 ## PV is cut although the battery could take it
 
 > Running **1.4.0 or older?** Then this is expected behaviour of that version — read
-> [Control law 1.4.x (archived)](https://github.com/acdcnow/opendtu-ems/wiki/Archive-1.4-Control-Law).
+> The superseded 1.4.x control law is described in
+> [Upgrading](https://github.com/acdcnow/opendtu-ems/wiki/Upgrading).
 > It explains the export ratchet, the SoC taper and the migration to 1.5.x.
 
 This was a real bug up to 1.4.x and is fixed in 1.5.0. Understand the numbers first, then
